@@ -1,68 +1,67 @@
 # Basketball Shot Consistency Analyzer
-# 篮球投篮一致性分析器
 
-## 快速开始
+## Quick Start
 
-### 1. 安装依赖
+### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 运行
+### 2. Run
 ```bash
 streamlit run app.py
 ```
 
-### 3. 使用方式
-1. 在左侧上传**参考动作视频**（职业球员 / 标准动作，建议侧面45°拍摄）
-2. 上传**你的投篮视频**
-3. 点击「🚀 开始分析」
-4. 查看得分、关节角度曲线和改进建议
+### 3. How to Use
+1. Upload a **reference shooting video** in the sidebar (pro player / standard form; side angle at 45° recommended)
+2. Upload **your shooting video**
+3. Click "🚀 Start Analysis"
+4. View scores, joint angle curves, and improvement suggestions
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 basketball_app/
-├── app.py                      # Streamlit 主应用
+├── app.py                      # Streamlit main app
 ├── requirements.txt
 ├── core/
-│   ├── pose_extractor.py       # MediaPipe 姿态提取
-│   └── consistency_scorer.py  # DTW 一致性打分
+│   ├── pose_extractor.py       # MediaPipe pose extraction
+│   └── consistency_scorer.py  # DTW consistency scoring
 └── utils/
-    └── visualizer.py           # 所有图表生成
+    └── visualizer.py           # All chart generation
 ```
 
-## 核心模块说明
+## Core Modules
 
-| 模块 | 功能 |
-|------|------|
-| `PoseExtractor` | 逐帧提取33个关键点坐标 + 8个关节角度 |
-| `ConsistencyScorer` | DTW对比 → 关节得分 → 加权总分 → 文字反馈 |
-| `visualizer` | 角度曲线图、雷达图、条形图、骨骼视频 |
+| Module | Function |
+|--------|----------|
+| `PoseExtractor` | Extract 33 keypoint coordinates + 8 joint angles per frame |
+| `ConsistencyScorer` | DTW comparison → joint scores → weighted total → text feedback |
+| `visualizer` | Angle curves, radar chart, bar chart, skeleton video |
 
-## 分析的关节
+## Analyzed Joints
 
-| 关节 | 权重 | 说明 |
-|------|------|------|
-| 右肘 | 35% | 投篮出手最关键 |
-| 右肩 | 20% | 上肢发力来源 |
-| 右膝 | 20% | 起跳蹬地动作 |
-| 右髋 | 15% | 身体平衡核心 |
-| 左肘 | 10% | 辅助手控制 |
+| Joint | Weight | Description |
+|-------|--------|-------------|
+| Right Elbow | 35% | Most critical for the shooting release |
+| Right Shoulder | 20% | Upper body power source |
+| Right Knee | 20% | Jump / push-off motion |
+| Right Hip | 15% | Core body balance |
+| Left Elbow | 10% | Guide hand control |
 
-## 一致性分数说明
+## Consistency Score Grades
 
-| 等级 | 分数 | 含义 |
-|------|------|------|
-| A | 85-100 | 非常稳定，职业水准 |
-| B | 70-84  | 较好，小幅调整即可 |
-| C | 55-69  | 有波动，需针对练习 |
-| D | 0-54   | 不稳定，回到基本功 |
+| Grade | Score | Meaning |
+|-------|-------|---------|
+| A | 85-100 | Very consistent, professional level |
+| B | 70-84  | Good, minor adjustments needed |
+| C | 55-69  | Some variation, targeted practice needed |
+| D | 0-54   | Inconsistent, focus on fundamentals |
 
-## 拍摄建议
-- **角度**：侧面45°或正侧面效果最佳
-- **距离**：保证全身在画面中
-- **时长**：完整投篮动作（起跳到落地），3-5秒即可
-- **稳定**：固定手机/相机，避免抖动
+## Filming Tips
+- **Angle**: Side view at 45° or direct side view works best
+- **Distance**: Ensure the full body is visible in the frame
+- **Duration**: A complete shooting motion (jump to landing), 3-5 seconds is enough
+- **Stability**: Use a tripod or rest the phone/camera on a stable surface

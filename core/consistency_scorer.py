@@ -1,8 +1,8 @@
 """
 consistency_scorer.py
 ----------------------
-基于 DTW（动态时间规整）计算两段投篮动作的一致性分数。
-支持：单次对比、多次对比取平均、关节级别细粒度分析。
+Compute consistency scores between two shooting motions using DTW (Dynamic Time Warping).
+Supports: single comparison, multi-shot averaging, and per-joint granular analysis.
 """
 
 import numpy as np
@@ -12,12 +12,12 @@ from dataclasses import dataclass
 from core.pose_extractor import ShotSequence
 
 
-# ── 配置：各关节权重 ───────────────────────────────────────────────────────────
+# ── Config: Joint Weights ──────────────────────────────────────────────────────
 
 JOINT_WEIGHTS: Dict[str, float] = {
-    "right_elbow":    0.25,   # 出手肘部最关键
+    "right_elbow":    0.25,   # Shooting elbow is most critical
     "right_shoulder": 0.20,
-    "right_wrist":    0.00,   # MediaPipe 不直接给 wrist angle，先置0
+    "right_wrist":    0.00,   # MediaPipe doesn't directly give wrist angle; set to 0
     "right_knee":     0.20,
     "right_hip":      0.15,
     "left_elbow":     0.10,
@@ -26,13 +26,13 @@ JOINT_WEIGHTS: Dict[str, float] = {
 }
 
 
-# ── 数据结构 ──────────────────────────────────────────────────────────────────
+# ── Data Structures ───────────────────────────────────────────────────────────
 
 @dataclass
 class JointScore:
     joint: str
-    dtw_distance: float       # 原始 DTW 距离（越小越好）
-    score: float              # 归一化后 0-100（越高越好）
+    dtw_distance: float       # Raw DTW distance (lower is better)
+    score: float              # Normalized 0-100 (higher is better)
     weight: float
     is_most_inconsistent: bool = False
 
@@ -42,8 +42,8 @@ class ConsistencyReport:
     overall_score: float                  # 0-100
     joint_scores: List[JointScore]
     most_inconsistent_joint: str
-    most_inconsistent_phase: str          # "起跳" / "上升" / "出手" / "随球"
-    feedback: List[str]                   # 自然语言反馈列表
+    most_inconsistent_phase: str          # "Loading" / "Rising" / "Release" / "Follow-through"
+    feedback: List[str]                   # Natural language feedback list
 
     @property
     def grade(self) -> str:
@@ -57,11 +57,11 @@ class ConsistencyReport:
             return "D"
 
 
-# ── DTW 核心 ──────────────────────────────────────────────────────────────────
+# ── DTW Core ───────────────────────────────────────────────────────────────
 
 def _dtw_distance(s1: np.ndarray, s2: np.ndarray) -> float:
-    """标准 DTW 距离，处理 NaN。"""
-    # 替换 NaN 为线性插值
+    """Standard DTW distance with NaN handling."""
+    # Replace NaN with linear interpolation
     s1 = _fill_nan(s1)
     s2 = _fill_nan(s2)
 
@@ -88,24 +88,24 @@ def _fill_nan(arr: np.ndarray) -> np.ndarray:
 
 
 def _normalize_score(dtw_dist: float, scale: float = 200.0) -> float:
-    """将 DTW 距离转换为 0-100 分（指数衰减）。"""
+    """Convert DTW distance to a 0-100 score (exponential decay)."""
     return float(100.0 * np.exp(-dtw_dist / scale))
 
 
-# ── 投篮阶段检测 ──────────────────────────────────────────────────────────────
+# ── Shot Phase Detection ────────────────────────────────────────────────────
 
 def detect_shot_phases(seq: ShotSequence) -> Dict[str, Tuple[int, int]]:
     """
-    简单地把序列四等分为四个阶段。
-    进阶版可以用膝盖角度曲线检测起跳点。
+    Simply divide the sequence into four equal phases.
+    An advanced version could detect the jump point from the knee angle curve.
     """
     n = len(seq.frames)
     q = n // 4
     return {
-        "起跳": (0, q),
-        "上升": (q, 2 * q),
-        "出手": (2 * q, 3 * q),
-        "随球": (3 * q, n),
+        "Loading": (0, q),
+        "Rising": (q, 2 * q),
+        "Release": (2 * q, 3 * q),
+        "Follow-through": (3 * q, n),
     }
 
 
@@ -114,15 +114,15 @@ def find_most_inconsistent_phase(
     user: ShotSequence,
     joint: str,
 ) -> str:
-    """找出最不一致的阶段。"""
+    """Find the most inconsistent phase."""
     phases = detect_shot_phases(user)
-    worst_phase, worst_dist = "出手", -1.0
+    worst_phase, worst_dist = "Release", -1.0
 
     ref_series = ref.angle_series(joint)
     user_series = user.angle_series(joint)
 
     for phase_name, (start, end) in phases.items():
-        # 按比例切 ref
+        # Scale ref proportionally
         r_start = int(start / len(user.frames) * len(ref.frames))
         r_end = int(end / len(user.frames) * len(ref.frames))
         dist = _dtw_distance(ref_series[r_start:r_end], user_series[start:end])
@@ -133,11 +133,11 @@ def find_most_inconsistent_phase(
     return worst_phase
 
 
-# ── 主类 ──────────────────────────────────────────────────────────────────────
+# ── Main Class ────────────────────────────────────────────────────────────────
 
 class ConsistencyScorer:
     """
-    用法：
+    Usage:
         scorer = ConsistencyScorer()
         report = scorer.compare(reference_sequence, user_sequence)
     """
@@ -148,7 +148,7 @@ class ConsistencyScorer:
 
     def compare(self, ref: ShotSequence, user: ShotSequence) -> ConsistencyReport:
         """
-        对比参考动作和用户动作，生成完整报告。
+        Compare reference and user motions, generate a full report.
         """
         joint_scores = []
         active_joints = [j for j, w in self.weights.items() if w > 0]
@@ -165,18 +165,18 @@ class ConsistencyScorer:
                 weight=self.weights[joint],
             ))
 
-        # 加权总分
+        # Weighted overall score
         total_w = sum(js.weight for js in joint_scores)
         overall = sum(js.score * js.weight for js in joint_scores) / (total_w + 1e-8)
 
-        # 最差关节
+        # Worst joint
         worst = min(joint_scores, key=lambda js: js.score)
         worst.is_most_inconsistent = True
 
-        # 最差阶段
+        # Worst phase
         worst_phase = find_most_inconsistent_phase(ref, user, worst.joint)
 
-        # 生成反馈
+        # Generate feedback
         feedback = self._generate_feedback(joint_scores, worst, worst_phase)
 
         return ConsistencyReport(
@@ -192,18 +192,18 @@ class ConsistencyScorer:
         shots: List[ShotSequence],
     ) -> Tuple[ConsistencyReport, List[ConsistencyReport]]:
         """
-        对多次投篮互相比较，返回综合报告和逐对报告。
-        进阶功能：分析球员自身动作稳定性。
+        Compare multiple shots against each other, return a summary and per-pair reports.
+        Advanced feature: analyze a player's own motion stability.
         """
         if len(shots) < 2:
-            raise ValueError("至少需要2次投篮才能比较")
+            raise ValueError("At least 2 shots are required for comparison")
 
         pair_reports = []
         for i in range(len(shots) - 1):
             report = self.compare(shots[i], shots[i + 1])
             pair_reports.append(report)
 
-        # 取平均分作为综合报告（简化版）
+        # Use average score as summary report (simplified)
         avg_score = np.mean([r.overall_score for r in pair_reports])
         worst_joint_counts: Dict[str, int] = {}
         for r in pair_reports:
@@ -213,14 +213,14 @@ class ConsistencyScorer:
 
         summary = ConsistencyReport(
             overall_score=round(float(avg_score), 1),
-            joint_scores=pair_reports[0].joint_scores,   # 用第一次的关节分
+            joint_scores=pair_reports[0].joint_scores,   # Use first pair's joint scores
             most_inconsistent_joint=most_common_worst,
             most_inconsistent_phase=pair_reports[0].most_inconsistent_phase,
-            feedback=[f"综合 {len(shots)} 次投篮分析：平均一致性 {avg_score:.1f} 分"],
+            feedback=[f"Combined analysis of {len(shots)} shots: average consistency {avg_score:.1f}"],
         )
         return summary, pair_reports
 
-    # ── 反馈文本生成 ──────────────────────────────────────────────────────────
+    # ── Feedback Text Generation ───────────────────────────────────────────────
 
     def _generate_feedback(
         self,
@@ -229,36 +229,36 @@ class ConsistencyScorer:
         worst_phase: str,
     ) -> List[str]:
         feedback = []
-        joint_cn = {
-            "right_elbow": "右肘",
-            "left_elbow": "左肘",
-            "right_shoulder": "右肩",
-            "left_shoulder": "左肩",
-            "right_knee": "右膝",
-            "left_knee": "左膝",
-            "right_hip": "右髋",
-            "left_hip": "左髋",
+        joint_en = {
+            "right_elbow": "Right Elbow",
+            "left_elbow": "Left Elbow",
+            "right_shoulder": "Right Shoulder",
+            "left_shoulder": "Left Shoulder",
+            "right_knee": "Right Knee",
+            "left_knee": "Left Knee",
+            "right_hip": "Right Hip",
+            "left_hip": "Left Hip",
         }
 
-        # 整体评价
+        # Overall assessment
         avg = np.mean([js.score for js in joint_scores])
         if avg >= 85:
-            feedback.append("✅ 整体动作非常稳定，继续保持！")
+            feedback.append("✅ Overall motion is very consistent. Keep it up!")
         elif avg >= 70:
-            feedback.append("👍 整体动作较好，有小幅提升空间。")
+            feedback.append("👍 Overall motion is good with minor room for improvement.")
         elif avg >= 55:
-            feedback.append("⚠️ 动作存在一定波动，需要针对性练习。")
+            feedback.append("⚠️ Motion shows some variation. Targeted practice is recommended.")
         else:
-            feedback.append("❌ 动作一致性较低，建议回到基本功训练。")
+            feedback.append("❌ Motion consistency is low. Focus on fundamentals.")
 
-        # 最差关节
-        cn_name = joint_cn.get(worst.joint, worst.joint)
-        feedback.append(f"🎯 最不稳定的关节是「{cn_name}」，在「{worst_phase}」阶段偏差最大。")
+        # Worst joint
+        en_name = joint_en.get(worst.joint, worst.joint)
+        feedback.append(f"🎯 Most unstable joint: {en_name} — largest deviation in the '{worst_phase}' phase.")
 
-        # 关节级别建议
+        # Per-joint suggestions
         for js in joint_scores:
             if js.score < 60:
-                cn = joint_cn.get(js.joint, js.joint)
-                feedback.append(f"📌 {cn} 一致性仅 {js.score:.0f} 分，需要重点关注。")
+                en = joint_en.get(js.joint, js.joint)
+                feedback.append(f"📌 {en} consistency is only {js.score:.0f}. Needs attention.")
 
         return feedback

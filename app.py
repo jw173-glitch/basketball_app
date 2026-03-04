@@ -1,6 +1,6 @@
 """
-app.py  ──  篮球投篮一致性分析器
-运行方式：streamlit run app.py
+app.py  ──  Basketball Shot Consistency Analyzer
+Run with: streamlit run app.py
 """
 
 import os
@@ -14,7 +14,7 @@ import streamlit as st
 import matplotlib
 matplotlib.use("Agg")
 
-# ── 路径设置 ──────────────────────────────────────────────────────────────────
+# ── Path Setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
 
 from core.pose_extractor import PoseExtractor
@@ -30,15 +30,15 @@ from utils.visualizer import (
 )
 
 
-# ── 页面配置 ──────────────────────────────────────────────────────────────────
+# ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="🏀 投篮一致性分析器",
+    page_title="🏀 Shot Consistency Analyzer",
     page_icon="🏀",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── 自定义 CSS ────────────────────────────────────────────────────────────────
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
     .main { background-color: #0F0F1A; }
@@ -52,7 +52,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── 缓存：初始化模型 ──────────────────────────────────────────────────────────
+# ── Cache: Initialize Models ─────────────────────────────────────────────────────
 @st.cache_resource
 def load_extractor():
     return PoseExtractor(min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -62,9 +62,9 @@ def load_scorer():
     return ConsistencyScorer()
 
 
-# ── 工具函数 ──────────────────────────────────────────────────────────────────
+# ── Utility Functions ─────────────────────────────────────────────────────────
 def save_upload(uploaded_file) -> str:
-    """把 UploadedFile 保存到临时文件，返回路径。"""
+    """Save an UploadedFile to a temp file and return the path."""
     suffix = os.path.splitext(uploaded_file.name)[-1]
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp.write(uploaded_file.read())
@@ -73,10 +73,10 @@ def save_upload(uploaded_file) -> str:
 
 
 def process_video_with_progress(extractor, path: str, label: str):
-    """处理视频并显示进度条。"""
-    bar = st.progress(0, text=f"正在处理 {label}…")
+    """Process video and show progress bar."""
+    bar = st.progress(0, text=f"Processing {label}…")
     seq = extractor.process_video(path, annotate=True, max_frames=200)
-    bar.progress(100, text=f"✅ {label} 处理完成（{len(seq.frames)} 帧）")
+    bar.progress(100, text=f"✅ {label} done ({len(seq.frames)} frames)")
     time.sleep(0.3)
     bar.empty()
     return seq
@@ -85,78 +85,78 @@ def process_video_with_progress(extractor, path: str, label: str):
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Basketball.png/240px-Basketball.png", width=80)
-    st.title("🏀 投篮分析器")
+    st.title("🏀 Shot Analyzer")
     st.markdown("---")
 
-    st.subheader("📁 上传视频")
-    ref_file  = st.file_uploader("参考动作（标准/职业球员）", type=["mp4", "mov", "avi", "mkv"])
-    user_file = st.file_uploader("你的投篮视频",             type=["mp4", "mov", "avi", "mkv"])
+    st.subheader("📁 Upload Videos")
+    ref_file  = st.file_uploader("Reference shot (pro / standard)", type=["mp4", "mov", "avi", "mkv"])
+    user_file = st.file_uploader("Your shooting video",             type=["mp4", "mov", "avi", "mkv"])
 
     st.markdown("---")
-    st.subheader("⚙️ 分析设置")
-    dtw_scale = st.slider("DTW 灵敏度", 50, 500, 200, 50,
-                           help="越小=越严格，越大=越宽松")
+    st.subheader("⚙️ Analysis Settings")
+    dtw_scale = st.slider("DTW Sensitivity", 50, 500, 200, 50,
+                           help="Lower = stricter, Higher = more lenient")
     show_joints = st.multiselect(
-        "显示关节曲线",
+        "Show joint curves",
         options=list(JOINT_CN.keys()),
         default=["right_elbow", "right_shoulder", "right_knee"],
         format_func=lambda x: JOINT_CN.get(x, x),
     )
 
-    analyze_btn = st.button("🚀 开始分析", type="primary", use_container_width=True,
+    analyze_btn = st.button("🚀 Start Analysis", type="primary", use_container_width=True,
                             disabled=(ref_file is None or user_file is None))
 
     if ref_file is None or user_file is None:
-        st.info("请先上传两段视频")
+        st.info("Please upload both videos first")
 
     st.markdown("---")
     st.caption("v1.0 · MediaPipe + DTW")
 
 
-# ── 主体 ──────────────────────────────────────────────────────────────────────
-st.title("🏀 篮球投篮一致性分析器")
-st.markdown("上传参考视频和你的投篮视频，获取关节角度对比和一致性评分。")
+# ── Main Content ──────────────────────────────────────────────────────────────
+st.title("🏀 Basketball Shot Consistency Analyzer")
+st.markdown("Upload a reference video and your shooting video to get joint angle comparison and consistency scores.")
 
 if not analyze_btn:
-    # 空状态展示
+    # Empty state
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.info("**Step 1**\n\n上传参考动作视频（职业球员 / 标准动作）")
+        st.info("**Step 1**\n\nUpload a reference shooting video (pro player / standard form)")
     with col2:
-        st.info("**Step 2**\n\n上传你的投篮视频（侧面45°拍摄效果最佳）")
+        st.info("**Step 2**\n\nUpload your shooting video (side angle at 45° works best)")
     with col3:
-        st.info("**Step 3**\n\n点击「开始分析」获取得分和反馈")
+        st.info("**Step 3**\n\nClick 'Start Analysis' for scores and feedback")
     st.stop()
 
 
-# ── 分析流程 ──────────────────────────────────────────────────────────────────
+# ── Analysis Pipeline ──────────────────────────────────────────────────────────
 extractor = load_extractor()
 scorer    = ConsistencyScorer(dtw_scale=dtw_scale)
 
-with st.spinner("保存上传文件…"):
+with st.spinner("Saving uploaded files…"):
     ref_path  = save_upload(ref_file)
     user_path = save_upload(user_file)
 
 col_ref, col_user = st.columns(2)
 with col_ref:
-    ref_seq  = process_video_with_progress(extractor, ref_path,  "参考视频")
+    ref_seq  = process_video_with_progress(extractor, ref_path,  "Reference video")
 with col_user:
-    user_seq = process_video_with_progress(extractor, user_path, "你的视频")
+    user_seq = process_video_with_progress(extractor, user_path, "Your video")
 
 if len(ref_seq.frames) < 5 or len(user_seq.frames) < 5:
-    st.error("⚠️ 未能检测到足够的姿态帧，请确认视频中有完整的全身画面。")
+    st.error("⚠️ Not enough pose frames detected. Make sure the video shows a full-body view.")
     st.stop()
 
-with st.spinner("计算一致性分数…"):
+with st.spinner("Calculating consistency scores…"):
     report = scorer.compare(ref_seq, user_seq)
 
 
-# ── 结果展示 ──────────────────────────────────────────────────────────────────
+# ── Results Display ─────────────────────────────────────────────────────────
 
 st.markdown("---")
-st.header("📊 分析结果")
+st.header("📊 Analysis Results")
 
-# 第一行：总分 + 关键指标
+# Row 1: Overall score + key metrics
 col_score, col_metrics = st.columns([1, 2])
 
 with col_score:
@@ -165,74 +165,74 @@ with col_score:
 
 with col_metrics:
     m1, m2, m3 = st.columns(3)
-    m1.metric("总分",     f"{report.overall_score:.1f} / 100")
-    m2.metric("等级",     report.grade)
-    m3.metric("分析帧数", f"{len(user_seq.frames)} 帧")
+    m1.metric("Score",     f"{report.overall_score:.1f} / 100")
+    m2.metric("Grade",     report.grade)
+    m3.metric("Frames Analyzed", f"{len(user_seq.frames)} frames")
 
     m4, m5 = st.columns(2)
-    m4.metric("最不稳定关节", JOINT_CN.get(report.most_inconsistent_joint, ""))
-    m5.metric("最差阶段",     report.most_inconsistent_phase)
+    m4.metric("Most Unstable Joint", JOINT_CN.get(report.most_inconsistent_joint, ""))
+    m5.metric("Worst Phase",     report.most_inconsistent_phase)
 
-    st.markdown("**📝 分析反馈**")
+    st.markdown("**📝 Analysis Feedback**")
     for fb in report.feedback:
         st.markdown(f"- {fb}")
 
 st.markdown("---")
 
-# 第二行：雷达图 + 条形图
+# Row 2: Radar + bar chart
 col_radar, col_bar = st.columns(2)
 with col_radar:
-    st.subheader("关节雷达图")
+    st.subheader("Joint Radar Chart")
     fig_radar = plot_radar(report)
     st.image(fig_to_bytes(fig_radar), use_container_width=True)
 
 with col_bar:
-    st.subheader("各关节得分")
+    st.subheader("Per-Joint Scores")
     fig_bar = plot_joint_bars(report)
     st.image(fig_to_bytes(fig_bar), use_container_width=True)
 
 st.markdown("---")
 
-# 第三行：角度曲线
-st.subheader("📈 关节角度对比曲线")
+# Row 3: Angle curves
+st.subheader("📈 Joint Angle Comparison Curves")
 if show_joints:
     fig_curves = plot_angle_curves(ref_seq, user_seq, joints=show_joints)
     st.image(fig_to_bytes(fig_curves), use_container_width=True)
 else:
-    st.info("请在左侧选择要显示的关节")
+    st.info("Please select joints to display from the sidebar")
 
 st.markdown("---")
 
-# 第四行：骨骼视频（可选）
-with st.expander("🎥 骨骼标注对比视频（可选，生成较慢）", expanded=False):
-    if st.button("生成骨骼视频"):
-        with st.spinner("生成中…"):
+# Row 4: Skeleton video (optional)
+with st.expander("🎬 Skeleton Annotated Comparison Video (optional, slow to generate)", expanded=False):
+    if st.button("Generate Skeleton Video"):
+        with st.spinner("Generating…"):
             out_path = tempfile.mktemp(suffix=".mp4")
             result   = export_skeleton_frames(ref_seq, user_seq, out_path, max_frames=60)
         if result:
             with open(result, "rb") as f:
                 st.video(f.read())
         else:
-            st.warning("骨骼帧不足，无法生成视频。")
+            st.warning("Not enough skeleton frames to generate video.")
 
 st.markdown("---")
 
-# 关节得分详情表
-with st.expander("📋 详细关节得分表", expanded=False):
+# Joint score detail table
+with st.expander("📋 Detailed Joint Score Table", expanded=False):
     import pandas as pd
     rows = []
     for js in report.joint_scores:
         if js.weight > 0:
             rows.append({
-                "关节":    JOINT_CN.get(js.joint, js.joint),
-                "得分":    f"{js.score:.1f}",
-                "DTW距离": f"{js.dtw_distance:.1f}",
-                "权重":    f"{js.weight:.0%}",
-                "状态":    "⚠️ 需改善" if js.is_most_inconsistent else ("✅ 良好" if js.score >= 75 else "📌 关注"),
+                "Joint":    JOINT_CN.get(js.joint, js.joint),
+                "Score":    f"{js.score:.1f}",
+                "DTW Dist.": f"{js.dtw_distance:.1f}",
+                "Weight":    f"{js.weight:.0%}",
+                "Status":    "⚠️ Needs work" if js.is_most_inconsistent else ("✅ Good" if js.score >= 75 else "📌 Attention"),
             })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-# 清理临时文件
+# Clean up temp files
 try:
     os.unlink(ref_path)
     os.unlink(user_path)

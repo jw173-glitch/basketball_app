@@ -1,7 +1,7 @@
 """
 visualizer.py
 -------------
-生成所有可视化图表：角度曲线、关节雷达图、骨骼帧动图。
+Generate all visualization charts: angle curves, joint radar, skeleton frame animation.
 """
 
 import cv2
@@ -16,22 +16,22 @@ from core.pose_extractor import ShotSequence
 from core.consistency_scorer import ConsistencyReport, JointScore
 
 
-# 颜色方案
-COLOR_REF  = "#4A90D9"   # 蓝色 = 参考
-COLOR_USER = "#E84855"   # 红色 = 用户
-COLOR_OK   = "#2ECC71"   # 绿色 = 良好
-COLOR_WARN = "#F39C12"   # 橙色 = 警告
-COLOR_BAD  = "#E74C3C"   # 红色 = 差
+# Color scheme
+COLOR_REF  = "#4A90D9"   # Blue = Reference
+COLOR_USER = "#E84855"   # Red = User
+COLOR_OK   = "#2ECC71"   # Green = Good
+COLOR_WARN = "#F39C12"   # Orange = Warning
+COLOR_BAD  = "#E74C3C"   # Red = Poor
 
 JOINT_CN = {
-    "right_elbow":    "右肘",
-    "left_elbow":     "左肘",
-    "right_shoulder": "右肩",
-    "left_shoulder":  "左肩",
-    "right_knee":     "右膝",
-    "left_knee":      "左膝",
-    "right_hip":      "右髋",
-    "left_hip":       "左髋",
+    "right_elbow":    "R. Elbow",
+    "left_elbow":     "L. Elbow",
+    "right_shoulder": "R. Shoulder",
+    "left_shoulder":  "L. Shoulder",
+    "right_knee":     "R. Knee",
+    "left_knee":      "L. Knee",
+    "right_hip":      "R. Hip",
+    "left_hip":       "L. Hip",
 }
 
 
@@ -44,7 +44,7 @@ def _score_color(score: float) -> str:
         return COLOR_BAD
 
 
-# ── 1. 角度对比曲线 ───────────────────────────────────────────────────────────
+# ── 1. Angle Comparison Curves ───────────────────────────────────────────────────
 
 def plot_angle_curves(
     ref: ShotSequence,
@@ -53,7 +53,7 @@ def plot_angle_curves(
     figsize: Tuple[int, int] = (12, 8),
 ) -> Figure:
     """
-    绘制参考动作 vs 用户动作的角度时间曲线。
+    Plot reference vs user angle time curves.
     """
     if joints is None:
         joints = ["right_elbow", "right_shoulder", "right_knee", "right_hip"]
@@ -73,11 +73,11 @@ def plot_angle_curves(
         user_t = np.linspace(0, 100, len(user_series))
 
         ax.set_facecolor("#16213E")
-        ax.plot(ref_t,  ref_series,  color=COLOR_REF,  lw=2.0, label="参考动作", alpha=0.9)
-        ax.plot(user_t, user_series, color=COLOR_USER, lw=2.0, label="你的动作", alpha=0.9, linestyle="--")
+        ax.plot(ref_t,  ref_series,  color=COLOR_REF,  lw=2.0, label="Reference", alpha=0.9)
+        ax.plot(user_t, user_series, color=COLOR_USER, lw=2.0, label="Your Shot", alpha=0.9, linestyle="--")
         ax.fill_between(ref_t, ref_series, alpha=0.1, color=COLOR_REF)
 
-        ax.set_ylabel(f"{JOINT_CN.get(joint, joint)}\n角度 (°)", color="white", fontsize=9)
+        ax.set_ylabel(f"{JOINT_CN.get(joint, joint)}\nAngle (°)", color="white", fontsize=9)
         ax.tick_params(colors="white", labelsize=8)
         ax.spines[:].set_color("#444")
         ax.grid(alpha=0.2, color="white")
@@ -85,16 +85,16 @@ def plot_angle_curves(
         if joint == joints[0]:
             ax.legend(loc="upper right", facecolor="#1A1A2E", labelcolor="white", fontsize=8)
 
-    axes[-1].set_xlabel("动作进度 (%)", color="white", fontsize=9)
-    fig.suptitle("关节角度对比", color="white", fontsize=13, fontweight="bold", y=1.01)
+    axes[-1].set_xlabel("Motion Progress (%)", color="white", fontsize=9)
+    fig.suptitle("Joint Angle Comparison", color="white", fontsize=13, fontweight="bold", y=1.01)
     plt.tight_layout()
     return fig
 
 
-# ── 2. 关节得分雷达图 ─────────────────────────────────────────────────────────
+# ── 2. Joint Score Radar Chart ───────────────────────────────────────────────
 
 def plot_radar(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 6)) -> Figure:
-    """绘制各关节得分的雷达图。"""
+    """Plot a radar chart of per-joint scores."""
     js_list = [js for js in report.joint_scores if js.weight > 0]
     labels  = [JOINT_CN.get(js.joint, js.joint) for js in js_list]
     scores  = [js.score for js in js_list]
@@ -111,7 +111,7 @@ def plot_radar(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 6)) -> 
     ax.plot(angles, scores_plot, color=COLOR_USER, lw=2)
     ax.fill(angles, scores_plot, color=COLOR_USER, alpha=0.25)
 
-    # 参考线 (100分)
+    # Reference line (100 pts)
     ax.plot(angles, [100] * (N + 1), color=COLOR_REF, lw=1.5, linestyle="--", alpha=0.5)
 
     ax.set_xticks(angles[:-1])
@@ -122,14 +122,14 @@ def plot_radar(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 6)) -> 
     ax.spines["polar"].set_color("#444")
     ax.grid(color="#444", alpha=0.5)
 
-    ax.set_title("各关节一致性", color="white", fontsize=12, fontweight="bold", pad=15)
+    ax.set_title("Per-Joint Consistency", color="white", fontsize=12, fontweight="bold", pad=15)
     return fig
 
 
-# ── 3. 综合评分卡 ─────────────────────────────────────────────────────────────
+# ── 3. Overall Score Card ───────────────────────────────────────────────────
 
 def plot_score_card(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 4)) -> Figure:
-    """大字显示总分和等级。"""
+    """Display overall score and grade in large text."""
     fig, ax = plt.subplots(figsize=figsize)
     fig.patch.set_facecolor("#1A1A2E")
     ax.set_facecolor("#1A1A2E")
@@ -140,16 +140,16 @@ def plot_score_card(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 4)
     ax.text(0.5, 0.72, f"{report.overall_score:.1f}", transform=ax.transAxes,
             ha="center", va="center", fontsize=72, fontweight="bold", color=color)
 
-    ax.text(0.5, 0.42, f"等级 {report.grade}", transform=ax.transAxes,
+    ax.text(0.5, 0.42, f"Grade {report.grade}", transform=ax.transAxes,
             ha="center", va="center", fontsize=24, color="white", alpha=0.85)
 
-    ax.text(0.5, 0.20, f"最不稳定关节：{JOINT_CN.get(report.most_inconsistent_joint, '')}  |  最差阶段：{report.most_inconsistent_phase}",
+    ax.text(0.5, 0.20, f"Most unstable joint: {JOINT_CN.get(report.most_inconsistent_joint, '')}  |  Worst phase: {report.most_inconsistent_phase}",
             transform=ax.transAxes, ha="center", va="center", fontsize=11, color="#AAAAAA")
 
     return fig
 
 
-# ── 4. 关节得分条形图 ─────────────────────────────────────────────────────────
+# ── 4. Joint Score Bar Chart ─────────────────────────────────────────────────────
 
 def plot_joint_bars(report: ConsistencyReport, figsize: Tuple[int, int] = (8, 4)) -> Figure:
     js_list = sorted([js for js in report.joint_scores if js.weight > 0],
@@ -165,7 +165,7 @@ def plot_joint_bars(report: ConsistencyReport, figsize: Tuple[int, int] = (8, 4)
     bars = ax.barh(labels, scores, color=colors, edgecolor="none", height=0.55)
     ax.set_xlim(0, 110)
     ax.axvline(x=75, color="white", linestyle="--", alpha=0.3, lw=1)
-    ax.set_xlabel("得分", color="white")
+    ax.set_xlabel("Score", color="white")
     ax.tick_params(colors="white")
     ax.spines[:].set_color("#444")
 
@@ -173,12 +173,12 @@ def plot_joint_bars(report: ConsistencyReport, figsize: Tuple[int, int] = (8, 4)
         ax.text(score + 1, bar.get_y() + bar.get_height() / 2,
                 f"{score:.0f}", va="center", color="white", fontsize=9)
 
-    ax.set_title("各关节得分", color="white", fontsize=12, fontweight="bold")
+    ax.set_title("Per-Joint Scores", color="white", fontsize=12, fontweight="bold")
     plt.tight_layout()
     return fig
 
 
-# ── 5. 导出骨骼对比视频帧（GIF） ──────────────────────────────────────────────
+# ── 5. Export Skeleton Comparison Video Frames (GIF) ──────────────────────
 
 def export_skeleton_frames(
     ref: ShotSequence,
@@ -187,8 +187,8 @@ def export_skeleton_frames(
     max_frames: int = 60,
 ) -> str:
     """
-    并排导出参考 vs 用户的骨骼标注帧，保存为 MP4。
-    返回输出路径。
+    Export reference vs user skeleton-annotated frames side by side, saved as MP4.
+    Returns the output path.
     """
     ref_frames  = [f.image for f in ref.frames  if f.image is not None][:max_frames]
     user_frames = [f.image for f in user.frames if f.image is not None][:max_frames]
@@ -208,7 +208,7 @@ def export_skeleton_frames(
         uf = cv2.resize(user_frames[i], (user_frames[0].shape[1], h))
         sep = np.zeros((h, 10, 3), dtype=np.uint8)
 
-        # 标签
+        # Labels
         cv2.putText(rf, "Reference", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
         cv2.putText(uf, "Your Shot", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 80, 255), 2)
 
@@ -219,7 +219,7 @@ def export_skeleton_frames(
     return output_path
 
 
-# ── 工具：Figure → bytes（Streamlit 用） ──────────────────────────────────────
+# ── Utility: Figure → bytes (for Streamlit) ───────────────────────────────────
 
 def fig_to_bytes(fig: Figure) -> bytes:
     buf = io.BytesIO()

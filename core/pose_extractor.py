@@ -1,7 +1,7 @@
 """
 pose_extractor.py
 -----------------
-使用 MediaPipe Pose 从视频中逐帧提取关节坐标和关节角度。
+Extract joint coordinates and joint angles frame-by-frame from video using MediaPipe Pose.
 """
 
 import cv2
@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 
 
-# ── 数据结构 ──────────────────────────────────────────────────────────────────
+# ── Data Structures ───────────────────────────────────────────────────────────
 
 @dataclass
 class FrameData:
@@ -23,11 +23,11 @@ class FrameData:
 
 @dataclass
 class ShotSequence:
-    """一次完整投篮动作的帧序列"""
+    """Frame sequence of a complete shooting motion."""
     frames: List[FrameData] = field(default_factory=list)
     fps: float = 30.0
 
-    # 便捷访问：角度时间序列
+    # Convenience accessor: angle time series
     def angle_series(self, joint: str) -> np.ndarray:
         return np.array([f.angles.get(joint, np.nan) for f in self.frames])
 
@@ -36,11 +36,11 @@ class ShotSequence:
         return len(self.frames) / self.fps
 
 
-# ── 关键关节定义 ───────────────────────────────────────────────────────────────
+# ── Key Joint Definitions ─────────────────────────────────────────────────────
 
 MP_POSE = mp.solutions.pose.PoseLandmark
 
-# 投篮分析用到的关节三元组 (顶点在中间)
+# Joint triplets used for shot analysis (vertex in the middle)
 ANGLE_DEFINITIONS = {
     "right_elbow":   (MP_POSE.RIGHT_SHOULDER, MP_POSE.RIGHT_ELBOW,   MP_POSE.RIGHT_WRIST),
     "left_elbow":    (MP_POSE.LEFT_SHOULDER,  MP_POSE.LEFT_ELBOW,    MP_POSE.LEFT_WRIST),
@@ -55,10 +55,10 @@ ANGLE_DEFINITIONS = {
 LANDMARK_NAMES = [lm.name.lower() for lm in MP_POSE]
 
 
-# ── 工具函数 ───────────────────────────────────────────────────────────────────
+# ── Utility Functions ─────────────────────────────────────────────────────────
 
 def _calc_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """计算 a-b-c 三点夹角（b 为顶点），返回度数 0-180。"""
+    """Calculate the angle at vertex b formed by points a-b-c. Returns degrees 0-180."""
     ba = a - b
     bc = c - b
     cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
@@ -69,11 +69,11 @@ def _lm_to_array(lm) -> np.ndarray:
     return np.array([lm.x, lm.y, lm.z])
 
 
-# ── 主类 ──────────────────────────────────────────────────────────────────────
+# ── Main Class ────────────────────────────────────────────────────────────────
 
 class PoseExtractor:
     """
-    用法：
+    Usage:
         extractor = PoseExtractor()
         sequence  = extractor.process_video("shot.mp4", annotate=True)
     """
@@ -84,7 +84,7 @@ class PoseExtractor:
         self._det_conf = min_detection_confidence
         self._trk_conf = min_tracking_confidence
 
-    # ── 公开 API ───────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def process_video(
         self,
@@ -93,13 +93,13 @@ class PoseExtractor:
         max_frames: int = 300,
     ) -> ShotSequence:
         """
-        从视频文件提取所有帧的姿态数据。
+        Extract pose data from all frames in a video file.
 
         Parameters
         ----------
-        video_path : 视频文件路径
-        annotate   : 是否在帧上画出骨骼（用于可视化）
-        max_frames : 最多处理帧数（防止超长视频）
+        video_path : Path to the video file
+        annotate   : Whether to draw skeleton overlay on frames (for visualization)
+        max_frames : Maximum number of frames to process (prevents long videos)
 
         Returns
         -------
@@ -128,14 +128,14 @@ class PoseExtractor:
         return sequence
 
     def process_frame(self, frame: np.ndarray, frame_idx: int = 0, annotate: bool = True) -> Optional[FrameData]:
-        """处理单帧图像（供实时使用）。"""
+        """Process a single image frame (for real-time use)."""
         with self.mp_pose.Pose(
             min_detection_confidence=self._det_conf,
             min_tracking_confidence=self._trk_conf,
         ) as pose:
             return self._process_frame(frame, pose, frame_idx, annotate)
 
-    # ── 内部方法 ───────────────────────────────────────────────────────────────
+    # ── Internal Methods ────────────────────────────────────────────────────────
 
     def _process_frame(self, frame, pose, idx, annotate) -> Optional[FrameData]:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -146,13 +146,13 @@ class PoseExtractor:
 
         lms = result.pose_landmarks.landmark
 
-        # 关节坐标
+        # Joint coordinates
         landmarks = {
             LANDMARK_NAMES[i]: (lm.x, lm.y, lm.z)
             for i, lm in enumerate(lms)
         }
 
-        # 关节角度
+        # Joint angles
         angles = {}
         for joint_name, (a_lm, b_lm, c_lm) in ANGLE_DEFINITIONS.items():
             a = _lm_to_array(lms[a_lm.value])
@@ -160,7 +160,7 @@ class PoseExtractor:
             c = _lm_to_array(lms[c_lm.value])
             angles[joint_name] = _calc_angle(a, b, c)
 
-        # 可视化标注
+        # Visualization overlay
         annotated = None
         if annotate:
             annotated = frame.copy()
