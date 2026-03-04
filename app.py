@@ -125,30 +125,57 @@ with st.sidebar:
         help="Lower = stricter scoring. Higher = more lenient.",
     )
 
-    st.markdown("**🦴 Joints to Analyze**")
-    st.caption("Deselect any joint that wasn't detected properly in your video.")
-
     ALL_JOINTS = list(JOINT_LABELS.keys())
     DEFAULT_JOINTS = [
         "right_elbow", "right_shoulder", "right_knee", "right_hip",
         "left_elbow", "left_shoulder", "left_knee", "left_hip",
     ]
+    # Default raw weights (before normalization)
+    DEFAULT_WEIGHTS_RAW = {
+        "right_elbow":    25,
+        "right_shoulder": 20,
+        "right_knee":     20,
+        "right_hip":      15,
+        "left_elbow":     10,
+        "left_shoulder":   5,
+        "left_knee":       5,
+        "left_hip":        0,
+    }
 
-    # One checkbox per joint, laid out in 2 columns
-    jcol1, jcol2 = st.columns(2)
-    active_joints = []
-    for i, joint in enumerate(ALL_JOINTS):
-        col = jcol1 if i % 2 == 0 else jcol2
-        checked = col.checkbox(
+    st.markdown("**🦴 Joints & Weights**")
+    st.caption("Uncheck joints that weren't detected. Drag sliders to adjust importance.")
+
+    active_joints  = []
+    raw_weights    = {}
+
+    for joint in ALL_JOINTS:
+        checked = st.checkbox(
             JOINT_LABELS[joint],
             value=(joint in DEFAULT_JOINTS),
             key=f"joint_cb_{joint}",
         )
         if checked:
             active_joints.append(joint)
+            raw_weights[joint] = st.slider(
+                f"Weight",
+                min_value=1, max_value=100,
+                value=DEFAULT_WEIGHTS_RAW.get(joint, 10),
+                step=1,
+                key=f"joint_w_{joint}",
+                label_visibility="collapsed",
+            )
 
     if not active_joints:
         st.warning("Select at least one joint.")
+
+    # Show live normalized weights
+    if active_joints:
+        total_raw = sum(raw_weights.values())
+        normalized = {j: raw_weights[j] / total_raw for j in active_joints}
+        with st.expander("📊 Normalized weights", expanded=False):
+            for j in active_joints:
+                pct = normalized[j] * 100
+                st.caption(f"{JOINT_LABELS[j]}: **{pct:.1f}%**")
 
     st.markdown("---")
     st.markdown("**📈 Angle Curves**")
@@ -309,16 +336,14 @@ if not run_analysis:
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
-# Build custom weights from only the joints the user selected.
-# Weight is distributed evenly across selected joints (normalized to sum to 1).
+# Normalize the user's raw slider values to sum to 1.0
 from core.consistency_scorer import JOINT_WEIGHTS as DEFAULT_WEIGHTS
 
 if active_joints:
-    raw_weights = {j: DEFAULT_WEIGHTS.get(j, 0.10) for j in active_joints}
-    total_w     = sum(raw_weights.values())
-    custom_weights = {j: w / total_w for j, w in raw_weights.items()}
+    total_raw      = sum(raw_weights.values())
+    custom_weights = {j: raw_weights[j] / total_raw for j in active_joints}
 else:
-    custom_weights = None  # fallback to defaults
+    custom_weights = None
 
 scorer = ConsistencyScorer(joint_weights=custom_weights, dtw_scale=dtw_scale)
 with st.spinner("Calculating consistency score…"):
