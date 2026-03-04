@@ -124,10 +124,38 @@ with st.sidebar:
         "DTW Sensitivity", 50, 500, 200, 50,
         help="Lower = stricter scoring. Higher = more lenient.",
     )
+
+    st.markdown("**🦴 Joints to Analyze**")
+    st.caption("Deselect any joint that wasn't detected properly in your video.")
+
+    ALL_JOINTS = list(JOINT_LABELS.keys())
+    DEFAULT_JOINTS = [
+        "right_elbow", "right_shoulder", "right_knee", "right_hip",
+        "left_elbow", "left_shoulder", "left_knee", "left_hip",
+    ]
+
+    # One checkbox per joint, laid out in 2 columns
+    jcol1, jcol2 = st.columns(2)
+    active_joints = []
+    for i, joint in enumerate(ALL_JOINTS):
+        col = jcol1 if i % 2 == 0 else jcol2
+        checked = col.checkbox(
+            JOINT_LABELS[joint],
+            value=(joint in DEFAULT_JOINTS),
+            key=f"joint_cb_{joint}",
+        )
+        if checked:
+            active_joints.append(joint)
+
+    if not active_joints:
+        st.warning("Select at least one joint.")
+
+    st.markdown("---")
+    st.markdown("**📈 Angle Curves**")
     show_joints = st.multiselect(
-        "Show angle curves for",
-        options=list(JOINT_LABELS.keys()),
-        default=["right_elbow", "right_shoulder", "right_knee"],
+        "Show curves for",
+        options=active_joints if active_joints else ALL_JOINTS,
+        default=[j for j in ["right_elbow", "right_shoulder", "right_knee"] if j in (active_joints or ALL_JOINTS)],
         format_func=lambda x: JOINT_LABELS.get(x, x),
     )
 
@@ -281,7 +309,18 @@ if not run_analysis:
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
-scorer = ConsistencyScorer(dtw_scale=dtw_scale)
+# Build custom weights from only the joints the user selected.
+# Weight is distributed evenly across selected joints (normalized to sum to 1).
+from core.consistency_scorer import JOINT_WEIGHTS as DEFAULT_WEIGHTS
+
+if active_joints:
+    raw_weights = {j: DEFAULT_WEIGHTS.get(j, 0.10) for j in active_joints}
+    total_w     = sum(raw_weights.values())
+    custom_weights = {j: w / total_w for j, w in raw_weights.items()}
+else:
+    custom_weights = None  # fallback to defaults
+
+scorer = ConsistencyScorer(joint_weights=custom_weights, dtw_scale=dtw_scale)
 with st.spinner("Calculating consistency score…"):
     report = scorer.compare(ref_seq_trimmed, user_seq_trimmed)
 
