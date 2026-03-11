@@ -43,10 +43,13 @@ class ShotSequence:
     fps: float = 30.0
 
     def angle_series(self, joint: str) -> np.ndarray:
+        """Return the angle time series for a given joint across all frames as a NumPy array.
+        Frames where the joint was not detected are filled with NaN."""
         return np.array([f.angles.get(joint, np.nan) for f in self.frames])
 
     @property
     def duration_sec(self) -> float:
+        """Total duration of the shot sequence in seconds, computed from frame count and FPS."""
         return len(self.frames) / self.fps
 
 
@@ -107,10 +110,13 @@ class PoseExtractor:
 
     def __init__(self, min_detection_confidence: float = 0.5,
                  min_tracking_confidence: float = 0.5):
+        """Initialize the extractor with MediaPipe confidence thresholds.
+        Lower thresholds increase recall but may introduce noisy detections."""
         self._det_conf = min_detection_confidence
         self._trk_conf = min_tracking_confidence
 
     def _make_pose(self):
+        """Instantiate a MediaPipe Pose context manager using the stored confidence settings."""
         return mp_pose_module.Pose(
             min_detection_confidence=self._det_conf,
             min_tracking_confidence=self._trk_conf,
@@ -146,6 +152,8 @@ class PoseExtractor:
     # ── Internal methods ──────────────────────────────────────────────────────
 
     def _process_frame(self, frame, pose, idx, annotate) -> Optional[FrameData]:
+        """Run MediaPipe on a single BGR frame, compute joint angles, and optionally draw landmarks.
+        Returns None if no pose is detected in the frame."""
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = pose.process(rgb)
 

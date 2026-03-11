@@ -47,6 +47,7 @@ class ConsistencyReport:
 
     @property
     def grade(self) -> str:
+        """Convert the overall score into a letter grade: A (≥85), B (≥70), C (≥55), D (<55)."""
         if self.overall_score >= 85:
             return "A"
         elif self.overall_score >= 70:
@@ -60,7 +61,11 @@ class ConsistencyReport:
 # ── DTW core ──────────────────────────────────────────────────────────────────
 
 def _dtw_distance(s1: np.ndarray, s2: np.ndarray) -> float:
-    """Standard DTW distance with NaN handling."""
+    """Compute the Dynamic Time Warping distance between two 1-D angle sequences.
+    DTW finds the optimal alignment between sequences of different lengths or speeds,
+    making it more robust than frame-by-frame subtraction for comparing motion data.
+    NaN values are interpolated before comparison. Returns a non-negative float —
+    lower means the two sequences are more similar."""
     s1 = _fill_nan(s1)
     s2 = _fill_nan(s2)
 
@@ -77,6 +82,9 @@ def _dtw_distance(s1: np.ndarray, s2: np.ndarray) -> float:
 
 
 def _fill_nan(arr: np.ndarray) -> np.ndarray:
+    """Replace NaN values in a 1-D array using linear interpolation over valid neighbors.
+    If the entire array is NaN (joint never detected), returns an all-zero array instead
+    so downstream DTW computation does not crash."""
     arr = arr.copy()
     nan_mask = np.isnan(arr)
     if nan_mask.all():
@@ -87,17 +95,21 @@ def _fill_nan(arr: np.ndarray) -> np.ndarray:
 
 
 def _normalize_score(dtw_dist: float, scale: float = 200.0) -> float:
-    """Convert DTW distance to 0-100 score (exponential decay)."""
+    """Convert a raw DTW distance into a human-readable 0–100 consistency score
+    using exponential decay: score = 100 * exp(-distance / scale).
+    A distance of 0 yields a perfect 100; the scale parameter controls how quickly
+    the score drops — larger scale = more tolerant of deviation."""
     return float(100.0 * np.exp(-dtw_dist / scale))
 
 
 # ── Shot phase detection ──────────────────────────────────────────────────────
 
 def detect_shot_phases(seq: ShotSequence) -> Dict[str, Tuple[int, int]]:
-    """
-    Simply divide the sequence into four equal phases.
-    An advanced version could detect the jump point from the knee angle curve.
-    """
+    """Divide a shot sequence into four named phases by splitting frames into equal quarters:
+    Loading (0–25%), Rising (25–50%), Release (50–75%), Follow-through (75–100%).
+    Returns a dict mapping phase name → (start_frame, end_frame) index range.
+    Note: this is a simple uniform split; a more advanced version could detect the
+    actual jump point from the knee angle curve for more precise phase boundaries."""
     n = len(seq.frames)
     q = n // 4
     return {
@@ -113,7 +125,10 @@ def find_most_inconsistent_phase(
     user: ShotSequence,
     joint: str,
 ) -> str:
-    """Find the phase with the highest DTW distance for a given joint."""
+    """Identify which shot phase has the largest DTW distance for a specific joint.
+    The user sequence is split into four phases; the reference is sliced proportionally
+    to match each phase's relative position. Returns the phase name (e.g. 'Release')
+    where the given joint deviates most from the reference."""
     phases = detect_shot_phases(user)
     worst_phase, worst_dist = "Release", -1.0
 
@@ -141,11 +156,17 @@ class ConsistencyScorer:
     """
 
     def __init__(self, joint_weights: Dict[str, float] = None, dtw_scale: float = 200.0):
+        """Set up the scorer with optional custom joint weights and a DTW scale factor.
+        joint_weights: maps joint name → importance (must sum to 1.0); defaults to JOINT_WEIGHTS.
+        dtw_scale: controls score sensitivity — increase to be more lenient with deviations."""
         self.weights   = joint_weights or JOINT_WEIGHTS
         self.dtw_scale = dtw_scale
 
     def compare(self, ref: ShotSequence, user: ShotSequence) -> ConsistencyReport:
-        """Compare reference and user shot sequences, return a full report."""
+        """Compare a reference shot sequence against a user shot sequence and produce a full report.
+        For each active joint (weight > 0), computes DTW distance and converts it to a 0–100 score.
+        The overall score is the weighted average across all joints. Also identifies the worst joint,
+        its most inconsistent phase, and generates human-readable feedback."""
         joint_scores  = []
         active_joints = [j for j, w in self.weights.items() if w > 0]
 
@@ -182,7 +203,10 @@ class ConsistencyScorer:
         self,
         shots: List[ShotSequence],
     ) -> Tuple[ConsistencyReport, List[ConsistencyReport]]:
-        """Compare multiple shots against each other to measure self-consistency."""
+        """Measure self-consistency across a series of shots by comparing consecutive pairs.
+        Compares shots[0] vs shots[1], shots[1] vs shots[2], etc., producing one report per pair.
+        Returns a summary report (average score, most frequently worst joint) alongside the
+        full list of per-pair reports. Requires at least 2 shots."""
         if len(shots) < 2:
             raise ValueError("Need at least 2 shots to compare.")
 
@@ -214,6 +238,10 @@ class ConsistencyScorer:
         worst: JointScore,
         worst_phase: str,
     ) -> List[str]:
+        """Build a list of human-readable feedback strings from the scoring results.
+        Generates an overall assessment based on average score, calls out the most
+        inconsistent joint and its worst phase, and flags any individual joint that
+        scored below 60 as needing focused attention."""
         feedback = []
 
         JOINT_LABELS = {
