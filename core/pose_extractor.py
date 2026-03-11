@@ -1,8 +1,8 @@
 """
 pose_extractor.py
 -----------------
-使用 MediaPipe Pose 从视频中逐帧提取关节坐标和关节角度。
-兼容 MediaPipe 新版（0.10+）和旧版（<0.10）API。
+Extract joint coordinates and joint angles frame-by-frame from video using MediaPipe Pose.
+Compatible with MediaPipe new API (0.10+) and legacy API (<0.10).
 """
 
 import cv2
@@ -12,8 +12,8 @@ from typing import List, Dict, Optional, Tuple
 
 import mediapipe as mp
 
-# ── 版本兼容：统一导入 ─────────────────────────────────────────────────────────
-# MediaPipe 0.10+ 把 solutions 移到 mediapipe.python.solutions
+# ── Version compatibility: unified import ─────────────────────────────────────
+# MediaPipe 0.10+ moved solutions to mediapipe.python.solutions
 try:
     from mediapipe.python.solutions import pose as mp_pose_module
     from mediapipe.python.solutions import drawing_utils as mp_drawing
@@ -26,7 +26,7 @@ except ImportError:
         mp_drawing     = mp.solutions.drawing_utils                     # type: ignore
 
 
-# ── 数据结构 ──────────────────────────────────────────────────────────────────
+# ── Data structures ───────────────────────────────────────────────────────────
 
 @dataclass
 class FrameData:
@@ -38,7 +38,7 @@ class FrameData:
 
 @dataclass
 class ShotSequence:
-    """一次完整投篮动作的帧序列"""
+    """Frame sequence of a complete shooting motion."""
     frames: List[FrameData] = field(default_factory=list)
     fps: float = 30.0
 
@@ -50,7 +50,7 @@ class ShotSequence:
         return len(self.frames) / self.fps
 
 
-# ── 关键关节定义（全部用整数索引，避免枚举API差异）────────────────────────────
+# ── Key joint definitions (all integer indices to avoid enum API differences) ─
 
 LM = {
     "nose": 0,
@@ -86,21 +86,21 @@ LANDMARK_NAMES = [
 ]
 
 
-# ── 工具函数 ───────────────────────────────────────────────────────────────────
+# ── Utility functions ─────────────────────────────────────────────────────────
 
 def _calc_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """计算 a-b-c 三点夹角（b 为顶点），返回度数 0-180。"""
+    """Compute the angle at vertex b formed by points a-b-c, returning degrees in range 0-180."""
     ba = a - b
     bc = c - b
     denom = np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8
     return float(np.degrees(np.arccos(np.clip(np.dot(ba, bc) / denom, -1.0, 1.0))))
 
 
-# ── 主类 ──────────────────────────────────────────────────────────────────────
+# ── Main class ────────────────────────────────────────────────────────────────
 
 class PoseExtractor:
     """
-    用法：
+    Usage:
         extractor = PoseExtractor()
         sequence  = extractor.process_video("shot.mp4", annotate=True)
     """
@@ -116,7 +116,7 @@ class PoseExtractor:
             min_tracking_confidence=self._trk_conf,
         )
 
-    # ── 公开 API ───────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def process_video(
         self,
@@ -124,7 +124,7 @@ class PoseExtractor:
         annotate: bool = True,
         max_frames: int = 300,
     ) -> ShotSequence:
-        """从视频文件提取所有帧的姿态数据。"""
+        """Extract pose data from all frames of a video file."""
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         sequence = ShotSequence(fps=fps)
@@ -143,7 +143,7 @@ class PoseExtractor:
         cap.release()
         return sequence
 
-    # ── 内部方法 ───────────────────────────────────────────────────────────────
+    # ── Internal methods ──────────────────────────────────────────────────────
 
     def _process_frame(self, frame, pose, idx, annotate) -> Optional[FrameData]:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -154,14 +154,14 @@ class PoseExtractor:
 
         lms = result.pose_landmarks.landmark
 
-        # 关节坐标
+        # Joint coordinates
         landmarks = {
             LANDMARK_NAMES[i]: (lm.x, lm.y, lm.z)
             for i, lm in enumerate(lms)
             if i < len(LANDMARK_NAMES)
         }
 
-        # 关节角度（整数索引，兼容所有版本）
+        # Joint angles (integer indices, compatible with all versions)
         angles = {}
         for joint_name, (ai, bi, ci) in ANGLE_DEFINITIONS.items():
             try:
@@ -172,7 +172,7 @@ class PoseExtractor:
             except (IndexError, AttributeError):
                 angles[joint_name] = float("nan")
 
-        # 可视化标注
+        # Visualization annotation
         annotated = None
         if annotate:
             annotated = frame.copy()
@@ -185,6 +185,6 @@ class PoseExtractor:
                     mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=2),
                 )
             except Exception:
-                pass  # 标注失败不影响数据提取
+                pass  # annotation failure does not affect data extraction
 
         return FrameData(frame_idx=idx, landmarks=landmarks, angles=angles, image=annotated)

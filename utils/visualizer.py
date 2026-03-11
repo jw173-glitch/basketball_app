@@ -1,7 +1,7 @@
 """
 visualizer.py
 -------------
-生成所有可视化图表：角度曲线、关节雷达图、骨骼帧动图。
+Generate all visualization charts: angle curves, joint radar chart, skeleton frame animation.
 """
 
 import cv2
@@ -16,12 +16,12 @@ from core.pose_extractor import ShotSequence
 from core.consistency_scorer import ConsistencyReport, JointScore
 
 
-# 颜色方案
-COLOR_REF  = "#4A90D9"   # 蓝色 = 参考
-COLOR_USER = "#E84855"   # 红色 = 用户
-COLOR_OK   = "#2ECC71"   # 绿色 = 良好
-COLOR_WARN = "#F39C12"   # 橙色 = 警告
-COLOR_BAD  = "#E74C3C"   # 红色 = 差
+# Color scheme
+COLOR_REF  = "#4A90D9"   # blue  = reference
+COLOR_USER = "#E84855"   # red   = user
+COLOR_OK   = "#2ECC71"   # green = good
+COLOR_WARN = "#F39C12"   # orange = warning
+COLOR_BAD  = "#E74C3C"   # red   = bad
 
 JOINT_LABELS = {
     "right_elbow":    "Right Elbow",
@@ -45,7 +45,7 @@ def _score_color(score: float) -> str:
         return COLOR_BAD
 
 
-# ── 1. 角度对比曲线 ───────────────────────────────────────────────────────────
+# ── 1. Angle comparison curves ───────────────────────────────────────────────
 
 def plot_angle_curves(
     ref: ShotSequence,
@@ -54,7 +54,7 @@ def plot_angle_curves(
     figsize: Tuple[int, int] = (12, 8),
 ) -> Figure:
     """
-    绘制参考动作 vs 用户动作的角度时间曲线。
+    Plot angle-over-time curves for reference vs user shot.
     """
     if joints is None:
         joints = ["right_elbow", "right_shoulder", "right_knee", "right_hip"]
@@ -92,10 +92,10 @@ def plot_angle_curves(
     return fig
 
 
-# ── 2. 关节得分雷达图 ─────────────────────────────────────────────────────────
+# ── 2. Joint score radar chart ────────────────────────────────────────────────
 
 def plot_radar(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 6)) -> Figure:
-    """绘制各关节得分的雷达图。"""
+    """Plot a radar chart of per-joint scores."""
     js_list = [js for js in report.joint_scores if js.weight > 0]
     labels  = [JOINT_LABELS.get(js.joint, js.joint) for js in js_list]
     scores  = [js.score for js in js_list]
@@ -112,7 +112,7 @@ def plot_radar(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 6)) -> 
     ax.plot(angles, scores_plot, color=COLOR_USER, lw=2)
     ax.fill(angles, scores_plot, color=COLOR_USER, alpha=0.25)
 
-    # 参考线 (100分)
+    # Reference line (perfect score 100)
     ax.plot(angles, [100] * (N + 1), color=COLOR_REF, lw=1.5, linestyle="--", alpha=0.5)
 
     ax.set_xticks(angles[:-1])
@@ -127,10 +127,10 @@ def plot_radar(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 6)) -> 
     return fig
 
 
-# ── 3. 综合评分卡 ─────────────────────────────────────────────────────────────
+# ── 3. Overall score card ─────────────────────────────────────────────────────
 
 def plot_score_card(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 4)) -> Figure:
-    """大字显示总分和等级。"""
+    """Display overall score and grade in large text."""
     fig, ax = plt.subplots(figsize=figsize)
     fig.patch.set_facecolor("#1A1A2E")
     ax.set_facecolor("#1A1A2E")
@@ -150,7 +150,7 @@ def plot_score_card(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 4)
     return fig
 
 
-# ── 4. 关节得分条形图 ─────────────────────────────────────────────────────────
+# ── 4. Joint score bar chart ──────────────────────────────────────────────────
 
 def plot_joint_bars(report: ConsistencyReport, figsize: Tuple[int, int] = (8, 4)) -> Figure:
     js_list = sorted([js for js in report.joint_scores if js.weight > 0],
@@ -179,7 +179,7 @@ def plot_joint_bars(report: ConsistencyReport, figsize: Tuple[int, int] = (8, 4)
     return fig
 
 
-# ── 5. 导出骨骼对比视频帧（GIF） ──────────────────────────────────────────────
+# ── 5. Export skeleton comparison video frames (MP4) ─────────────────────────
 
 def export_skeleton_frames(
     ref: ShotSequence,
@@ -188,8 +188,8 @@ def export_skeleton_frames(
     max_frames: int = 60,
 ) -> str:
     """
-    并排导出参考 vs 用户的骨骼标注帧，保存为 MP4。
-    返回输出路径。
+    Export reference vs user skeleton-annotated frames side by side, saved as MP4.
+    Returns the output path.
     """
     ref_frames  = [f.image for f in ref.frames  if f.image is not None][:max_frames]
     user_frames = [f.image for f in user.frames if f.image is not None][:max_frames]
@@ -209,7 +209,7 @@ def export_skeleton_frames(
         uf = cv2.resize(user_frames[i], (user_frames[0].shape[1], h))
         sep = np.zeros((h, 10, 3), dtype=np.uint8)
 
-        # 标签
+        # Labels
         cv2.putText(rf, "Reference", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
         cv2.putText(uf, "Your Shot", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 80, 255), 2)
 
