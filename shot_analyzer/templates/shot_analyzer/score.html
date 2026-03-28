@@ -1,0 +1,101 @@
+{% extends 'shot_analyzer/base.html' %}
+{% block title %}Score My Shot{% endblock %}
+
+{% block content %}
+<h1 class="mb-1">Score My Shot</h1>
+<p class="text-muted mb-4">Upload a new shot video and your trained model will estimate the likelihood it's a made shot.</p>
+
+{% if not_trained %}
+  <div class="card text-center py-5">
+    <div class="card-body">
+      <div class="display-4 mb-3">🧠</div>
+      <h4>No Trained Model Yet</h4>
+      <p class="text-muted">You need to train a personal model first.</p>
+      <a href="{% url 'training' %}" class="btn btn-primary">Go to Training →</a>
+    </div>
+  </div>
+{% else %}
+
+  {% if personal_model.is_trained %}
+  <div class="alert alert-success mb-4">
+    ✅ Model trained on <strong>{{ personal_model.n_samples }}</strong> samples
+    ({{ personal_model.n_made }} made / {{ personal_model.n_missed }} missed) &nbsp;·&nbsp;
+    CV accuracy: <strong>{{ personal_model.accuracy_pct }}%</strong>
+    ({{ personal_model.model_type }})
+  </div>
+  {% endif %}
+
+  <div class="row g-4">
+    <div class="col-md-5">
+      <div class="card">
+        <div class="card-header"><h6 class="mb-0">📹 Upload Shot</h6></div>
+        <div class="card-body">
+          <form method="post" enctype="multipart/form-data" id="scoreForm">
+            {% csrf_token %}
+            <div class="mb-3">
+              <label class="form-label">Shot Video</label>
+              <input type="file" name="video" class="form-control" accept="video/*" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100" id="scoreBtn">
+              🎯 Get My Score
+            </button>
+            <div class="form-text mt-2">Processing takes ~15-30 sec.</div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    {% if prediction %}
+    <div class="col-md-7">
+      <div class="card text-center">
+        <div class="card-header"><h6 class="mb-0">Result — {{ video_name }}</h6></div>
+        <div class="card-body py-4">
+          <div class="display-1 fw-bold mb-2
+            {% if prediction.score >= 75 %}score-color-a
+            {% elif prediction.score >= 55 %}score-color-b
+            {% elif prediction.score >= 35 %}score-color-c
+            {% else %}score-color-d{% endif %}">
+            {{ prediction.score }}
+          </div>
+          <p class="text-muted mb-4">out of 100</p>
+
+          <div class="row g-3 justify-content-center">
+            <div class="col-5">
+              <div class="stat-box">
+                <div class="stat-value" style="color:#2ECC71;">{{ prediction.made_prob }}%</div>
+                <div class="stat-label">Made probability</div>
+              </div>
+            </div>
+            <div class="col-5">
+              <div class="stat-box">
+                <div class="stat-value" style="color:#E74C3C;">{{ prediction.missed_prob }}%</div>
+                <div class="stat-label">Missed probability</div>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-muted small mt-4">
+            This score reflects how closely your shot mechanics match your <em>made</em> shots.<br>
+            Higher = more similar to when you score.
+          </p>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  const form = document.getElementById('scoreForm');
+  if (form) {
+    form.addEventListener('submit', function () {
+      document.getElementById('loadingOverlay').classList.add('active');
+      document.getElementById('scoreBtn').disabled = true;
+    });
+  }
+</script>
+{% endblock %}

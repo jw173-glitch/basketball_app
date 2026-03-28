@@ -1,0 +1,127 @@
+{% extends 'shot_analyzer/base.html' %}
+{% block title %}Compare Shots{% endblock %}
+
+{% block content %}
+<h1 class="mb-1">Compare Shots</h1>
+<p class="text-muted mb-4">Upload a reference video and your shot. The app extracts joint angles and scores consistency using DTW.</p>
+
+<form method="post" enctype="multipart/form-data" id="compareForm">
+  {% csrf_token %}
+
+  {% if form.non_field_errors %}
+    <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+  {% endif %}
+
+  <div class="row g-4">
+
+    <!-- Left: Video uploads + Trim -->
+    <div class="col-lg-7">
+
+      <div class="card mb-3">
+        <div class="card-header"><h6 class="mb-0">📁 Upload Videos</h6></div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Reference Video <span class="text-muted">(pro / standard form)</span></label>
+              <input type="file" name="ref_video" class="form-control" accept="video/*" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Your Shot Video</label>
+              <input type="file" name="user_video" class="form-control" accept="video/*" required>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-header"><h6 class="mb-0">✂️ Trim (optional)</h6></div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">Enter the start/end percentage of the video to keep. Use this to isolate just the shooting motion.</p>
+          <div class="row g-3">
+            <div class="col-6">
+              <label class="form-label small">Reference start (%)</label>
+              <input type="number" name="ref_start_pct" class="form-control" value="0" min="0" max="100" step="1">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">Reference end (%)</label>
+              <input type="number" name="ref_end_pct" class="form-control" value="100" min="0" max="100" step="1">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">Your shot start (%)</label>
+              <input type="number" name="user_start_pct" class="form-control" value="0" min="0" max="100" step="1">
+            </div>
+            <div class="col-6">
+              <label class="form-label small">Your shot end (%)</label>
+              <input type="number" name="user_end_pct" class="form-control" value="100" min="0" max="100" step="1">
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right: Settings -->
+    <div class="col-lg-5">
+
+      <div class="card mb-3">
+        <div class="card-header"><h6 class="mb-0">⚙️ DTW Sensitivity</h6></div>
+        <div class="card-body">
+          <label class="form-label small">Scale: <span id="dtw_val">200</span></label>
+          <input type="range" name="dtw_scale" class="form-range" min="50" max="500" step="50" value="200"
+                 oninput="document.getElementById('dtw_val').textContent = this.value">
+          <div class="form-text">Lower = stricter scoring. Higher = more lenient.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h6 class="mb-0">🦴 Joint Weights</h6></div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">Adjust how much each joint contributes to the overall score.</p>
+          {% for field, joint in form.joint_weight_fields %}
+          <div class="mb-2">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="form-label small mb-0">{{ field.label }}</label>
+              <span class="text-warning small" id="w_{{ joint }}">{{ field.value|default:field.field.initial }}</span>
+            </div>
+            <input type="range" name="{{ field.html_name }}"
+                   class="form-range joint-weight-slider"
+                   min="0" max="100" step="1"
+                   value="{{ field.value|default:field.field.initial }}"
+                   data-target="w_{{ joint }}"
+                   oninput="document.getElementById(this.dataset.target).textContent = this.value; updateWeightTotal()">
+          </div>
+          {% endfor %}
+          <div class="mt-2 pt-2 border-top border-secondary">
+            <small class="text-muted">Total raw weight: <span id="weightTotal" class="text-warning">—</span></small>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="mt-4">
+    <button type="submit" class="btn btn-primary btn-lg px-5" id="submitBtn">
+      🚀 Run Analysis
+    </button>
+    <span class="text-muted ms-3 small">Processing takes ~30-60 seconds</span>
+  </div>
+
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  function updateWeightTotal() {
+    let total = 0;
+    document.querySelectorAll('.joint-weight-slider').forEach(s => total += parseInt(s.value) || 0);
+    document.getElementById('weightTotal').textContent = total;
+  }
+  updateWeightTotal();
+
+  document.getElementById('compareForm').addEventListener('submit', function () {
+    document.getElementById('loadingOverlay').classList.add('active');
+    document.getElementById('submitBtn').disabled = true;
+  });
+</script>
+{% endblock %}

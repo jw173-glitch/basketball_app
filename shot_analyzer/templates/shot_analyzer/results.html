@@ -1,0 +1,113 @@
+{% extends 'shot_analyzer/base.html' %}
+{% block title %}Results — Shot Analyzer{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h1 class="mb-0">Analysis Results</h1>
+  <a href="{% url 'compare' %}" class="btn btn-outline-secondary">← New Analysis</a>
+</div>
+<p class="text-muted mb-4">
+  <strong>{{ session.ref_video_name }}</strong> vs <strong>{{ session.user_video_name }}</strong>
+  &nbsp;·&nbsp; {{ session.created_at|date:"M d, Y H:i" }}
+</p>
+
+<!-- Score + metrics row -->
+<div class="row g-3 mb-4 align-items-stretch">
+  <div class="col-md-4">
+    <div class="card h-100 text-center p-3">
+      <div class="display-1 fw-bold score-color-{{ session.grade|lower }}">{{ session.overall_score }}</div>
+      <div class="fs-3 text-white">Grade <span class="badge badge-{{ session.grade|lower }} fs-4">{{ session.grade }}</span></div>
+      <hr class="section-divider">
+      <div class="text-muted small">
+        Most inconsistent joint:<br>
+        <strong class="text-white">{{ session.most_inconsistent_joint|title }}</strong>
+      </div>
+      <div class="text-muted small mt-1">
+        Worst phase: <strong class="text-white">{{ session.most_inconsistent_phase }}</strong>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-8">
+    <div class="card h-100">
+      <div class="card-header"><h6 class="mb-0">📝 Feedback</h6></div>
+      <div class="card-body">
+        <ul class="list-unstyled mb-0">
+          {% for line in feedback %}
+            <li class="mb-2">{{ line }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts row -->
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><h6 class="mb-0">Joint Consistency Radar</h6></div>
+      <div class="card-body text-center p-2">
+        <img src="data:image/png;base64,{{ session.chart_radar }}" class="img-fluid" style="max-height:340px;">
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><h6 class="mb-0">Joint Scores</h6></div>
+      <div class="card-body text-center p-2">
+        <img src="data:image/png;base64,{{ session.chart_joint_bars }}" class="img-fluid" style="max-height:340px;">
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Angle curves -->
+{% if session.chart_angle_curves %}
+<div class="card mb-4">
+  <div class="card-header"><h6 class="mb-0">📈 Joint Angle Comparison</h6></div>
+  <div class="card-body text-center p-2">
+    <img src="data:image/png;base64,{{ session.chart_angle_curves }}" class="img-fluid">
+  </div>
+</div>
+{% endif %}
+
+<!-- Joint score table -->
+<div class="card mb-4">
+  <div class="card-header"><h6 class="mb-0">📋 Detailed Joint Scores</h6></div>
+  <div class="card-body p-0">
+    <table class="table table-dark table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Joint</th>
+          <th>Score</th>
+          <th>DTW Distance</th>
+          <th>Weight</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for js in joint_scores %}
+        <tr {% if js.is_most_inconsistent %}style="background-color:#2a1a1a;"{% endif %}>
+          <td>{{ js.label }}</td>
+          <td class="fw-bold score-color-{% if js.score >= 85 %}a{% elif js.score >= 70 %}b{% elif js.score >= 55 %}c{% else %}d{% endif %}">
+            {{ js.score }}
+          </td>
+          <td class="text-muted">{{ js.dtw_distance }}</td>
+          <td class="text-muted">{{ js.weight }}%</td>
+          <td>
+            {% if js.is_most_inconsistent %}
+              <span class="badge bg-danger">⚠️ Worst</span>
+            {% elif js.score >= 75 %}
+              <span class="badge bg-success">✅ Good</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">📌 Watch</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

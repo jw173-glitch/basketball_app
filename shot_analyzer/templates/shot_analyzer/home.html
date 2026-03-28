@@ -1,0 +1,112 @@
+{% extends 'shot_analyzer/base.html' %}
+{% block title %}Home — Shot Analyzer{% endblock %}
+
+{% block content %}
+<div class="row align-items-center mb-4">
+  <div class="col">
+    <h1 class="mb-1">Welcome back, {{ user.username }}</h1>
+    <p class="text-muted">Analyze your basketball shooting form with AI-powered pose analysis.</p>
+  </div>
+</div>
+
+<!-- Quick stats -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="stat-box">
+      <div class="stat-value text-warning">{{ recent_sessions.count }}</div>
+      <div class="stat-label">Sessions</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="stat-box">
+      <div class="stat-value" style="color:#2ECC71;">{{ sample_counts.made }}</div>
+      <div class="stat-label">Made samples</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="stat-box">
+      <div class="stat-value" style="color:#E74C3C;">{{ sample_counts.missed }}</div>
+      <div class="stat-label">Missed samples</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="stat-box">
+      {% if personal_model.is_trained %}
+        <div class="stat-value" style="color:#2ECC71;">{{ personal_model.accuracy_pct }}%</div>
+        <div class="stat-label">Model accuracy</div>
+      {% else %}
+        <div class="stat-value text-muted">—</div>
+        <div class="stat-label">Model not trained</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Quick actions -->
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-body d-flex flex-column">
+        <h5>📹 Compare Shots</h5>
+        <p class="text-muted flex-grow-1">Upload a reference video and your own shot to get a DTW-based consistency score.</p>
+        <a href="{% url 'compare' %}" class="btn btn-primary">Start Analysis</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-body d-flex flex-column">
+        <h5>🧠 Train My Model</h5>
+        <p class="text-muted flex-grow-1">Upload your own made/missed shots to train a personalized scoring model.</p>
+        <a href="{% url 'training' %}" class="btn btn-primary">Go to Training</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-body d-flex flex-column">
+        <h5>🎯 Score My Shot</h5>
+        <p class="text-muted flex-grow-1">Upload a new shot and let your trained model predict your likelihood of making it.</p>
+        <a href="{% url 'score' %}" class="btn btn-primary {% if not personal_model.is_trained %}disabled{% endif %}">
+          {% if personal_model.is_trained %}Score a Shot{% else %}Train First{% endif %}
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent sessions -->
+{% if recent_sessions %}
+<div class="card">
+  <div class="card-header">
+    <h5 class="mb-0">Recent Analysis Sessions</h5>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-dark table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Your Video</th>
+          <th>Score</th>
+          <th>Grade</th>
+          <th>Worst Joint</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in recent_sessions %}
+        <tr>
+          <td class="text-muted">{{ s.created_at|date:"M d, Y H:i" }}</td>
+          <td>{{ s.user_video_name }}</td>
+          <td class="score-color-{{ s.grade|lower }}"><strong>{{ s.overall_score }}</strong></td>
+          <td><span class="badge badge-{{ s.grade|lower }}">{{ s.grade }}</span></td>
+          <td class="text-muted">{{ s.most_inconsistent_joint|title }}</td>
+          <td><a href="{% url 'results' s.id %}" class="btn btn-outline-secondary btn-sm">View</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
