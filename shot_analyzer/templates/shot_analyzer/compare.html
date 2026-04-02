@@ -3,125 +3,298 @@
 
 {% block content %}
 <h1 class="mb-1">Compare Shots</h1>
-<p class="text-muted mb-4">Upload a reference video and your shot. The app extracts joint angles and scores consistency using DTW.</p>
+<p class="text-muted mb-4">Upload two videos, preview and trim to the shooting motion, then run the analysis.</p>
 
-<form method="post" enctype="multipart/form-data" id="compareForm">
-  {% csrf_token %}
-
-  {% if form.non_field_errors %}
-    <div class="alert alert-danger">{{ form.non_field_errors }}</div>
-  {% endif %}
-
-  <div class="row g-4">
-
-    <!-- Left: Video uploads + Trim -->
-    <div class="col-lg-7">
-
-      <div class="card mb-3">
-        <div class="card-header"><h6 class="mb-0">📁 Upload Videos</h6></div>
-        <div class="card-body">
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">Reference Video <span class="text-muted">(pro / standard form)</span></label>
-              <input type="file" name="ref_video" class="form-control" accept="video/*" required>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Your Shot Video</label>
-              <input type="file" name="user_video" class="form-control" accept="video/*" required>
-            </div>
-          </div>
+<!-- ── Step 1: Upload ─────────────────────────────────────────────────── -->
+<div id="step1">
+  <div class="card">
+    <div class="card-header"><h6 class="mb-0">Step 1 — Upload Videos</h6></div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label">Reference Video <span class="text-muted">(pro / standard form)</span></label>
+          <input type="file" id="refFileInput" class="form-control" accept="video/*">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Your Shot Video</label>
+          <input type="file" id="userFileInput" class="form-control" accept="video/*">
         </div>
       </div>
-
-      <div class="card mb-3">
-        <div class="card-header"><h6 class="mb-0">✂️ Trim (optional)</h6></div>
-        <div class="card-body">
-          <p class="text-muted small mb-3">Enter the start/end percentage of the video to keep. Use this to isolate just the shooting motion.</p>
-          <div class="row g-3">
-            <div class="col-6">
-              <label class="form-label small">Reference start (%)</label>
-              <input type="number" name="ref_start_pct" class="form-control" value="0" min="0" max="100" step="1">
-            </div>
-            <div class="col-6">
-              <label class="form-label small">Reference end (%)</label>
-              <input type="number" name="ref_end_pct" class="form-control" value="100" min="0" max="100" step="1">
-            </div>
-            <div class="col-6">
-              <label class="form-label small">Your shot start (%)</label>
-              <input type="number" name="user_start_pct" class="form-control" value="0" min="0" max="100" step="1">
-            </div>
-            <div class="col-6">
-              <label class="form-label small">Your shot end (%)</label>
-              <input type="number" name="user_end_pct" class="form-control" value="100" min="0" max="100" step="1">
-            </div>
-          </div>
-        </div>
+      <div class="mt-3">
+        <button id="uploadBtn" class="btn btn-primary" onclick="uploadAndPreview()" disabled>
+          Extract Preview Frames
+        </button>
+        <span class="text-muted ms-3 small">Takes ~5 seconds to load thumbnails</span>
       </div>
-
-    </div>
-
-    <!-- Right: Settings -->
-    <div class="col-lg-5">
-
-      <div class="card mb-3">
-        <div class="card-header"><h6 class="mb-0">⚙️ DTW Sensitivity</h6></div>
-        <div class="card-body">
-          <label class="form-label small">Scale: <span id="dtw_val">200</span></label>
-          <input type="range" name="dtw_scale" class="form-range" min="50" max="500" step="50" value="200"
-                 oninput="document.getElementById('dtw_val').textContent = this.value">
-          <div class="form-text">Lower = stricter scoring. Higher = more lenient.</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header"><h6 class="mb-0">🦴 Joint Weights</h6></div>
-        <div class="card-body">
-          <p class="text-muted small mb-3">Adjust how much each joint contributes to the overall score.</p>
-          {% for field, joint in form.joint_weight_fields %}
-          <div class="mb-2">
-            <div class="d-flex justify-content-between align-items-center mb-1">
-              <label class="form-label small mb-0">{{ field.label }}</label>
-              <span class="text-warning small" id="w_{{ joint }}">{{ field.value|default:field.field.initial }}</span>
-            </div>
-            <input type="range" name="{{ field.html_name }}"
-                   class="form-range joint-weight-slider"
-                   min="0" max="100" step="1"
-                   value="{{ field.value|default:field.field.initial }}"
-                   data-target="w_{{ joint }}"
-                   oninput="document.getElementById(this.dataset.target).textContent = this.value; updateWeightTotal()">
-          </div>
-          {% endfor %}
-          <div class="mt-2 pt-2 border-top border-secondary">
-            <small class="text-muted">Total raw weight: <span id="weightTotal" class="text-warning">—</span></small>
-          </div>
-        </div>
-      </div>
-
+      <div id="uploadError" class="alert alert-danger mt-3 d-none"></div>
     </div>
   </div>
+</div>
 
-  <div class="mt-4">
-    <button type="submit" class="btn btn-primary btn-lg px-5" id="submitBtn">
+<!-- ── Step 2: Trim + Settings + Submit ──────────────────────────────── -->
+<div id="step2" class="d-none">
+
+  <div class="d-flex align-items-center justify-content-between mb-3 mt-4">
+    <h5 class="mb-0">Step 2 — Trim &amp; Settings</h5>
+    <button class="btn btn-outline-secondary btn-sm" onclick="resetToStep1()">← Re-upload</button>
+  </div>
+
+  <form id="analyzeForm" method="post" action="{% url 'compare' %}">
+    {% csrf_token %}
+
+    <!-- Hidden trim values (updated by sliders via JS) -->
+    <input type="hidden" name="ref_start_pct"  id="refStartVal"  value="0">
+    <input type="hidden" name="ref_end_pct"    id="refEndVal"    value="100">
+    <input type="hidden" name="user_start_pct" id="userStartVal" value="0">
+    <input type="hidden" name="user_end_pct"   id="userEndVal"   value="100">
+
+    <!-- Trim panels -->
+    <div class="row g-4 mb-4">
+      <!-- Reference trim -->
+      <div class="col-lg-6">
+        <div class="card">
+          <div class="card-header">
+            <h6 class="mb-0">Reference Video — <span id="refFileName" class="text-muted"></span></h6>
+          </div>
+          <div class="card-body">
+            <div class="row g-2 mb-3 text-center">
+              <div class="col-6">
+                <div class="text-muted small mb-1">Start frame</div>
+                <img id="refStartImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
+                <div class="text-warning small mt-1"><span id="refStartPct">0</span>%
+                  &nbsp;(frame <span id="refStartFrame">0</span>)</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small mb-1">End frame</div>
+                <img id="refEndImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
+                <div class="text-warning small mt-1"><span id="refEndPct">100</span>%
+                  &nbsp;(frame <span id="refEndFrame">0</span>)</div>
+              </div>
+            </div>
+            <label class="form-label small">Start</label>
+            <input type="range" id="refStartSlider" class="form-range mb-2"
+                   min="0" max="95" step="1" value="0"
+                   oninput="onTrimChange('ref')">
+            <label class="form-label small">End</label>
+            <input type="range" id="refEndSlider" class="form-range"
+                   min="5" max="100" step="1" value="100"
+                   oninput="onTrimChange('ref')">
+          </div>
+        </div>
+      </div>
+
+      <!-- User trim -->
+      <div class="col-lg-6">
+        <div class="card">
+          <div class="card-header">
+            <h6 class="mb-0">Your Shot — <span id="userFileName" class="text-muted"></span></h6>
+          </div>
+          <div class="card-body">
+            <div class="row g-2 mb-3 text-center">
+              <div class="col-6">
+                <div class="text-muted small mb-1">Start frame</div>
+                <img id="userStartImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
+                <div class="text-warning small mt-1"><span id="userStartPct">0</span>%
+                  &nbsp;(frame <span id="userStartFrame">0</span>)</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small mb-1">End frame</div>
+                <img id="userEndImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
+                <div class="text-warning small mt-1"><span id="userEndPct">100</span>%
+                  &nbsp;(frame <span id="userEndFrame">0</span>)</div>
+              </div>
+            </div>
+            <label class="form-label small">Start</label>
+            <input type="range" id="userStartSlider" class="form-range mb-2"
+                   min="0" max="95" step="1" value="0"
+                   oninput="onTrimChange('user')">
+            <label class="form-label small">End</label>
+            <input type="range" id="userEndSlider" class="form-range"
+                   min="5" max="100" step="1" value="100"
+                   oninput="onTrimChange('user')">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="row g-4 mb-4">
+      <div class="col-lg-4">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0">⚙️ DTW Sensitivity</h6></div>
+          <div class="card-body">
+            <label class="form-label small">Scale: <span id="dtwVal">200</span></label>
+            <input type="range" name="dtw_scale" class="form-range"
+                   min="50" max="500" step="50" value="200"
+                   oninput="document.getElementById('dtwVal').textContent = this.value">
+            <div class="form-text">Lower = stricter. Higher = more lenient.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-8">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0">🦴 Joint Weights</h6></div>
+          <div class="card-body">
+            <div class="row g-2">
+              {% for joint, label in joint_labels.items %}
+              <div class="col-6 col-md-3">
+                <label class="form-label small mb-1">{{ label }}</label>
+                <div class="d-flex align-items-center gap-2">
+                  <input type="range" name="weight_{{ joint }}"
+                         class="form-range flex-grow-1 joint-slider"
+                         min="0" max="100" step="1"
+                         value="{% if joint == 'right_elbow' %}25{% elif joint == 'right_shoulder' %}20{% elif joint == 'right_knee' %}20{% elif joint == 'right_hip' %}15{% elif joint == 'left_elbow' %}10{% elif joint == 'left_shoulder' %}5{% elif joint == 'left_knee' %}5{% else %}0{% endif %}"
+                         oninput="this.nextElementSibling.textContent = this.value">
+                  <span class="text-warning small" style="min-width:24px;">
+                    {% if joint == 'right_elbow' %}25{% elif joint == 'right_shoulder' %}20{% elif joint == 'right_knee' %}20{% elif joint == 'right_hip' %}15{% elif joint == 'left_elbow' %}10{% elif joint == 'left_shoulder' %}5{% elif joint == 'left_knee' %}5{% else %}0{% endif %}
+                  </span>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-lg px-5" id="runBtn">
       🚀 Run Analysis
     </button>
-    <span class="text-muted ms-3 small">Processing takes ~30-60 seconds</span>
-  </div>
-
-</form>
+    <span class="text-muted ms-3 small">MediaPipe processing takes ~30-60 seconds</span>
+  </form>
+</div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-  function updateWeightTotal() {
-    let total = 0;
-    document.querySelectorAll('.joint-weight-slider').forEach(s => total += parseInt(s.value) || 0);
-    document.getElementById('weightTotal').textContent = total;
-  }
-  updateWeightTotal();
+  // ── State ──────────────────────────────────────────────────────────────────
+  const state = {
+    ref:  { frames: [], total: 0 },
+    user: { frames: [], total: 0 },
+  };
 
-  document.getElementById('compareForm').addEventListener('submit', function () {
+  // Enable upload button only when both files are selected
+  document.getElementById('refFileInput').addEventListener('change', checkFilesReady);
+  document.getElementById('userFileInput').addEventListener('change', checkFilesReady);
+
+  function checkFilesReady() {
+    const ready = document.getElementById('refFileInput').files.length > 0 &&
+                  document.getElementById('userFileInput').files.length > 0;
+    document.getElementById('uploadBtn').disabled = !ready;
+  }
+
+  // ── Step 1: upload & extract thumbnails ───────────────────────────────────
+  async function uploadAndPreview() {
+    const btn = document.getElementById('uploadBtn');
+    const errBox = document.getElementById('uploadError');
+    errBox.classList.add('d-none');
+    btn.disabled = true;
+    btn.textContent = 'Extracting...';
     document.getElementById('loadingOverlay').classList.add('active');
-    document.getElementById('submitBtn').disabled = true;
+
+    const fd = new FormData();
+    fd.append('ref_video',  document.getElementById('refFileInput').files[0]);
+    fd.append('user_video', document.getElementById('userFileInput').files[0]);
+    fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
+
+    try {
+      const res = await fetch("{% url 'compare_preview' %}", { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Server error');
+      }
+
+      // Store thumbnails
+      state.ref.frames  = data.ref_frames;
+      state.ref.total   = data.ref_total;
+      state.user.frames = data.user_frames;
+      state.user.total  = data.user_total;
+
+      // Show filenames
+      document.getElementById('refFileName').textContent =
+        document.getElementById('refFileInput').files[0].name;
+      document.getElementById('userFileName').textContent =
+        document.getElementById('userFileInput').files[0].name;
+
+      // Initialize previews
+      onTrimChange('ref');
+      onTrimChange('user');
+
+      document.getElementById('step1').classList.add('d-none');
+      document.getElementById('step2').classList.remove('d-none');
+
+    } catch (err) {
+      errBox.textContent = 'Error: ' + err.message;
+      errBox.classList.remove('d-none');
+      btn.disabled = false;
+      btn.textContent = 'Extract Preview Frames';
+    } finally {
+      document.getElementById('loadingOverlay').classList.remove('active');
+    }
+  }
+
+  // ── Step 2: slider interaction ────────────────────────────────────────────
+  function onTrimChange(side) {
+    const startSlider = document.getElementById(side + 'StartSlider');
+    const endSlider   = document.getElementById(side + 'EndSlider');
+
+    let startPct = parseInt(startSlider.value);
+    let endPct   = parseInt(endSlider.value);
+
+    // Enforce start < end with a minimum 5% gap
+    if (startPct >= endPct - 5) {
+      if (document.activeElement === startSlider) {
+        startPct = endPct - 5;
+        startSlider.value = startPct;
+      } else {
+        endPct = startPct + 5;
+        endSlider.value = endPct;
+      }
+    }
+
+    const frames = state[side].frames;
+    const total  = state[side].total;
+    const n      = frames.length - 1;  // 0..20 → 0..100%
+
+    const startIdx = Math.round(startPct / 100 * n);
+    const endIdx   = Math.round(endPct   / 100 * n);
+
+    // Update preview images
+    if (frames[startIdx]) {
+      document.getElementById(side + 'StartImg').src = 'data:image/jpeg;base64,' + frames[startIdx];
+    }
+    if (frames[endIdx]) {
+      document.getElementById(side + 'EndImg').src = 'data:image/jpeg;base64,' + frames[endIdx];
+    }
+
+    // Update labels
+    document.getElementById(side + 'StartPct').textContent   = startPct;
+    document.getElementById(side + 'EndPct').textContent     = endPct;
+    document.getElementById(side + 'StartFrame').textContent = Math.round(startPct / 100 * (total - 1));
+    document.getElementById(side + 'EndFrame').textContent   = Math.round(endPct   / 100 * (total - 1));
+
+    // Sync hidden form fields
+    document.getElementById(side + 'StartVal').value = startPct;
+    document.getElementById(side + 'EndVal').value   = endPct;
+  }
+
+  // ── Re-upload ─────────────────────────────────────────────────────────────
+  function resetToStep1() {
+    document.getElementById('step2').classList.add('d-none');
+    document.getElementById('step1').classList.remove('d-none');
+    document.getElementById('uploadBtn').disabled = false;
+    document.getElementById('uploadBtn').textContent = 'Extract Preview Frames';
+    document.getElementById('refFileInput').value  = '';
+    document.getElementById('userFileInput').value = '';
+    checkFilesReady();
+  }
+
+  // ── Submit: show loading overlay ──────────────────────────────────────────
+  document.getElementById('analyzeForm').addEventListener('submit', function () {
+    document.getElementById('loadingOverlay').classList.add('active');
+    document.getElementById('runBtn').disabled = true;
   });
 </script>
 {% endblock %}

@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 
+import cv2
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -30,7 +32,7 @@ from utils.visualizer import (
     plot_score_card,
 )
 
-from .forms import CompareForm, ScoreShotForm, TrainingSampleForm
+from .forms import ScoreShotForm, TrainingSampleForm
 from .models import AnalysisSession, PersonalModel, TrainingSample
 from .services import start_training_thread
 
@@ -118,50 +120,109 @@ def home(request):
     })
 
 
-# ── Compare ───────────────────────────────────────────────────────────────────
+# ── Compare — step 1: extract preview frames ─────────────────────────────────
+
+@login_required
+def extract_preview_frames(request):
+    """AJAX endpoint: save both uploaded videos to session temp files and return
+    evenly-spaced thumbnail frames so the frontend can show a live trim preview."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    if 'ref_video' not in request.FILES or 'user_video' not in request.FILES:
+        return JsonResponse({'error': 'Both videos are required.'}, status=400)
+
+    # Remove previous temp files if the user re-uploads
+    for key in ('ref_video_path', 'user_video_path'):
+        old_path = request.session.get(key)
+        if old_path and os.path.exists(old_path):
+            try:
+                os.unlink(old_path)
+            except Exception:
+                pass
+
+    ref_path  = _save_temp_video(request.FILES['ref_video'])
+    user_path = _save_temp_video(request.FILES['user_video'])
+
+    request.session['ref_video_path']  = ref_path
+    request.session['user_video_path'] = user_path
+    request.session['ref_video_name']  = request.FILES['ref_video'].name
+    request.session['user_video_name'] = request.FILES['user_video'].name
+
+    def _extract_thumbnails(video_path: str, n: int = 21):
+        """Return n base64 JPEG thumbnails sampled evenly across the video."""
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        thumbnails = []
+        for i in range(n):
+            frame_idx = int(i / (n - 1) * (total_frames - 1))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if ret:
+                h, w = frame.shape[:2]
+                thumb = cv2.resize(frame, (320, int(h * 320 / w)))
+                _, buf = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                thumbnails.append(base64.b64encode(buf.tobytes()).decode('utf-8'))
+            else:
+                thumbnails.append(None)
+        cap.release()
+        return thumbnails, total_frames
+
+    try:
+        ref_thumbs,  ref_total  = _extract_thumbnails(ref_path)
+        user_thumbs, user_total = _extract_thumbnails(user_path)
+        return JsonResponse({
+            'ref_frames':  ref_thumbs,
+            'ref_total':   ref_total,
+            'user_frames': user_thumbs,
+            'user_total':  user_total,
+        })
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=500)
+
+
+# ── Compare — step 2: run full analysis ───────────────────────────────────────
 
 @login_required
 def compare(request):
     if request.method == 'POST':
-        form = CompareForm(request.POST, request.FILES)
-        if not form.is_valid():
-            return render(request, 'shot_analyzer/compare.html', {
-                'form': form, 'joint_labels': JOINT_LABELS,
-            })
+        ref_path  = request.session.get('ref_video_path')
+        user_path = request.session.get('user_video_path')
 
-        ref_path = _save_temp_video(request.FILES['ref_video'])
-        user_path = _save_temp_video(request.FILES['user_video'])
+        if not ref_path or not user_path or \
+                not os.path.exists(ref_path) or not os.path.exists(user_path):
+            messages.error(request, 'Video files not found. Please upload again.')
+            return redirect('compare')
+
+        ref_start_pct  = float(request.POST.get('ref_start_pct',  0))
+        ref_end_pct    = float(request.POST.get('ref_end_pct',   100))
+        user_start_pct = float(request.POST.get('user_start_pct', 0))
+        user_end_pct   = float(request.POST.get('user_end_pct',  100))
+        dtw_scale      = int(request.POST.get('dtw_scale', 200))
 
         try:
             extractor = PoseExtractor()
-            ref_seq = extractor.process_video(ref_path, annotate=True, max_frames=300)
+            ref_seq  = extractor.process_video(ref_path,  annotate=True, max_frames=300)
             user_seq = extractor.process_video(user_path, annotate=True, max_frames=300)
 
             if len(ref_seq.frames) < 5 or len(user_seq.frames) < 5:
-                form.add_error(None, 'Not enough pose frames detected. Make sure your full body is visible.')
-                return render(request, 'shot_analyzer/compare.html', {
-                    'form': form, 'joint_labels': JOINT_LABELS,
-                })
+                messages.error(request, 'Not enough pose frames detected. Make sure your full body is visible.')
+                return redirect('compare')
 
-            ref_seq = _trim_sequence(ref_seq,
-                form.cleaned_data['ref_start_pct'],
-                form.cleaned_data['ref_end_pct'])
-            user_seq = _trim_sequence(user_seq,
-                form.cleaned_data['user_start_pct'],
-                form.cleaned_data['user_end_pct'])
+            ref_seq  = _trim_sequence(ref_seq,  ref_start_pct,  ref_end_pct)
+            user_seq = _trim_sequence(user_seq, user_start_pct, user_end_pct)
 
             if len(ref_seq.frames) < 5 or len(user_seq.frames) < 5:
-                form.add_error(None, 'Trimmed sequence too short. Widen the trim range.')
-                return render(request, 'shot_analyzer/compare.html', {
-                    'form': form, 'joint_labels': JOINT_LABELS,
-                })
+                messages.error(request, 'Trimmed selection too short. Widen the range.')
+                return redirect('compare')
 
-            # Build normalized joint weights from submitted sliders
             raw_weights = {}
             for joint in JOINT_LABELS:
-                raw_val = form.cleaned_data.get(f'weight_{joint}')
-                if raw_val is not None and raw_val > 0:
-                    raw_weights[joint] = raw_val
+                raw_val = request.POST.get(f'weight_{joint}')
+                if raw_val is not None:
+                    val = int(raw_val)
+                    if val > 0:
+                        raw_weights[joint] = val
 
             if raw_weights:
                 total = sum(raw_weights.values())
@@ -169,28 +230,25 @@ def compare(request):
             else:
                 joint_weights = None
 
-            scorer = ConsistencyScorer(
-                joint_weights=joint_weights,
-                dtw_scale=form.cleaned_data.get('dtw_scale', 200),
-            )
+            scorer = ConsistencyScorer(joint_weights=joint_weights, dtw_scale=dtw_scale)
             report = scorer.compare(ref_seq, user_seq)
 
             joint_scores_data = [
                 {
-                    'joint':               js.joint,
-                    'label':               JOINT_LABELS.get(js.joint, js.joint),
-                    'score':               round(js.score, 1),
-                    'dtw_distance':        round(js.dtw_distance, 1),
-                    'weight':              round(js.weight * 100, 1),
+                    'joint':                js.joint,
+                    'label':                JOINT_LABELS.get(js.joint, js.joint),
+                    'score':                round(js.score, 1),
+                    'dtw_distance':         round(js.dtw_distance, 1),
+                    'weight':               round(js.weight * 100, 1),
                     'is_most_inconsistent': js.is_most_inconsistent,
                 }
                 for js in report.joint_scores if js.weight > 0
             ]
 
-            session = AnalysisSession.objects.create(
+            analysis_session = AnalysisSession.objects.create(
                 user=request.user,
-                ref_video_name=request.FILES['ref_video'].name,
-                user_video_name=request.FILES['user_video'].name,
+                ref_video_name=request.session.get('ref_video_name', 'reference'),
+                user_video_name=request.session.get('user_video_name', 'your shot'),
                 overall_score=report.overall_score,
                 grade=report.grade,
                 most_inconsistent_joint=report.most_inconsistent_joint,
@@ -200,11 +258,9 @@ def compare(request):
                 chart_score_card=_fig_to_base64(plot_score_card(report)),
                 chart_radar=_fig_to_base64(plot_radar(report)),
                 chart_joint_bars=_fig_to_base64(plot_joint_bars(report)),
-                chart_angle_curves=_fig_to_base64(
-                    plot_angle_curves(ref_seq, user_seq)
-                ),
+                chart_angle_curves=_fig_to_base64(plot_angle_curves(ref_seq, user_seq)),
             )
-            return redirect('results', session_id=session.id)
+            return redirect('results', session_id=analysis_session.id)
 
         finally:
             for path in (ref_path, user_path):
@@ -212,14 +268,10 @@ def compare(request):
                     os.unlink(path)
                 except Exception:
                     pass
+            for key in ('ref_video_path', 'user_video_path', 'ref_video_name', 'user_video_name'):
+                request.session.pop(key, None)
 
-    else:
-        form = CompareForm()
-
-    return render(request, 'shot_analyzer/compare.html', {
-        'form': form,
-        'joint_labels': JOINT_LABELS,
-    })
+    return render(request, 'shot_analyzer/compare.html', {'joint_labels': JOINT_LABELS})
 
 
 # ── Results ───────────────────────────────────────────────────────────────────
