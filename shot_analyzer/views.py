@@ -33,7 +33,7 @@ from utils.visualizer import (
 )
 
 from .forms import ScoreShotForm, TrainingSampleForm
-from .models import AnalysisSession, PersonalModel, TrainingSample
+from .models import AnalysisSession, PersonalModel, PlayerTemplate, TrainingSample
 from .services import start_training_thread
 
 
@@ -70,6 +70,21 @@ def _trim_sequence(seq: ShotSequence, start_pct: float, end_pct: float) -> ShotS
 def _get_or_create_personal_model(user) -> PersonalModel:
     model_obj, _ = PersonalModel.objects.get_or_create(user=user)
     return model_obj
+
+
+def _deserialize_template_sequence(sequence_json: str) -> ShotSequence:
+    """Reconstruct a ShotSequence from a PlayerTemplate's stored JSON."""
+    from core.pose_extractor import FrameData
+    data = json.loads(sequence_json)
+    seq = ShotSequence(fps=data['fps'])
+    for f in data['frames']:
+        seq.frames.append(FrameData(
+            frame_idx=f['frame_idx'],
+            landmarks={},
+            angles=f['angles'],
+            image=None,
+        ))
+    return seq
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -124,33 +139,20 @@ def home(request):
 
 @login_required
 def extract_preview_frames(request):
-    """AJAX endpoint: save both uploaded videos to session temp files and return
-    evenly-spaced thumbnail frames so the frontend can show a live trim preview."""
+    """AJAX endpoint: save uploaded video(s) to session temp files and return
+    evenly-spaced thumbnail frames for the trim preview.
+    When a player template is selected, only the user video is required."""
     if request.method != 'POST':
         return JsonResponse({'error': 'POST required'}, status=405)
 
-    if 'ref_video' not in request.FILES or 'user_video' not in request.FILES:
-        return JsonResponse({'error': 'Both videos are required.'}, status=400)
+    using_template = bool(request.POST.get('template_id'))
 
-    # Remove previous temp files if the user re-uploads
-    for key in ('ref_video_path', 'user_video_path'):
-        old_path = request.session.get(key)
-        if old_path and os.path.exists(old_path):
-            try:
-                os.unlink(old_path)
-            except Exception:
-                pass
-
-    ref_path  = _save_temp_video(request.FILES['ref_video'])
-    user_path = _save_temp_video(request.FILES['user_video'])
-
-    request.session['ref_video_path']  = ref_path
-    request.session['user_video_path'] = user_path
-    request.session['ref_video_name']  = request.FILES['ref_video'].name
-    request.session['user_video_name'] = request.FILES['user_video'].name
+    if 'user_video' not in request.FILES:
+        return JsonResponse({'error': 'Your shot video is required.'}, status=400)
+    if not using_template and 'ref_video' not in request.FILES:
+        return JsonResponse({'error': 'Reference video is required.'}, status=400)
 
     def _extract_thumbnails(video_path: str, n: int = 21):
-        """Return n base64 JPEG thumbnails sampled evenly across the video."""
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
         thumbnails = []
@@ -168,15 +170,41 @@ def extract_preview_frames(request):
         cap.release()
         return thumbnails, total_frames
 
+    # Clean up old temp files
+    for key in ('ref_video_path', 'user_video_path'):
+        old_path = request.session.get(key)
+        if old_path and os.path.exists(old_path):
+            try:
+                os.unlink(old_path)
+            except Exception:
+                pass
+
     try:
-        ref_thumbs,  ref_total  = _extract_thumbnails(ref_path)
+        user_path = _save_temp_video(request.FILES['user_video'])
+        request.session['user_video_path'] = user_path
+        request.session['user_video_name'] = request.FILES['user_video'].name
+
         user_thumbs, user_total = _extract_thumbnails(user_path)
-        return JsonResponse({
-            'ref_frames':  ref_thumbs,
-            'ref_total':   ref_total,
+        response_data = {
             'user_frames': user_thumbs,
             'user_total':  user_total,
-        })
+        }
+
+        if using_template:
+            request.session['template_id'] = request.POST['template_id']
+            request.session.pop('ref_video_path', None)
+        else:
+            ref_path = _save_temp_video(request.FILES['ref_video'])
+            request.session['ref_video_path'] = ref_path
+            request.session['ref_video_name'] = request.FILES['ref_video'].name
+            request.session.pop('template_id', None)
+
+            ref_thumbs, ref_total = _extract_thumbnails(ref_path)
+            response_data['ref_frames'] = ref_thumbs
+            response_data['ref_total']  = ref_total
+
+        return JsonResponse(response_data)
+
     except Exception as exc:
         return JsonResponse({'error': str(exc)}, status=500)
 
@@ -186,33 +214,47 @@ def extract_preview_frames(request):
 @login_required
 def compare(request):
     if request.method == 'POST':
-        ref_path  = request.session.get('ref_video_path')
-        user_path = request.session.get('user_video_path')
+        user_path   = request.session.get('user_video_path')
+        template_id = request.session.get('template_id')
+        ref_path    = request.session.get('ref_video_path')
 
-        if not ref_path or not user_path or \
-                not os.path.exists(ref_path) or not os.path.exists(user_path):
-            messages.error(request, 'Video files not found. Please upload again.')
+        if not user_path or not os.path.exists(user_path):
+            messages.error(request, 'Your video was not found. Please upload again.')
             return redirect('compare')
 
-        ref_start_pct  = float(request.POST.get('ref_start_pct',  0))
-        ref_end_pct    = float(request.POST.get('ref_end_pct',   100))
+        if not template_id and (not ref_path or not os.path.exists(ref_path)):
+            messages.error(request, 'Reference video was not found. Please upload again.')
+            return redirect('compare')
+
         user_start_pct = float(request.POST.get('user_start_pct', 0))
         user_end_pct   = float(request.POST.get('user_end_pct',  100))
-        dtw_scale      = int(request.POST.get('dtw_scale', 200))
+        ref_start_pct  = float(request.POST.get('ref_start_pct',  0))
+        ref_end_pct    = float(request.POST.get('ref_end_pct',   100))
+        dtw_scale      = int(request.POST.get('dtw_scale', 10))
 
         try:
             extractor = PoseExtractor()
-            ref_seq  = extractor.process_video(ref_path,  annotate=True, max_frames=300)
             user_seq = extractor.process_video(user_path, annotate=True, max_frames=300)
 
-            if len(ref_seq.frames) < 5 or len(user_seq.frames) < 5:
-                messages.error(request, 'Not enough pose frames detected. Make sure your full body is visible.')
+            if len(user_seq.frames) < 5:
+                messages.error(request, 'Not enough pose frames detected in your video.')
                 return redirect('compare')
 
-            ref_seq  = _trim_sequence(ref_seq,  ref_start_pct,  ref_end_pct)
             user_seq = _trim_sequence(user_seq, user_start_pct, user_end_pct)
 
-            if len(ref_seq.frames) < 5 or len(user_seq.frames) < 5:
+            if template_id:
+                template = get_object_or_404(PlayerTemplate, id=template_id)
+                ref_seq = _deserialize_template_sequence(template.sequence_json)
+                ref_name = f'{template.name} (Template)'
+            else:
+                ref_seq = extractor.process_video(ref_path, annotate=True, max_frames=300)
+                if len(ref_seq.frames) < 5:
+                    messages.error(request, 'Not enough pose frames in the reference video.')
+                    return redirect('compare')
+                ref_seq = _trim_sequence(ref_seq, ref_start_pct, ref_end_pct)
+                ref_name = request.session.get('ref_video_name', 'reference')
+
+            if len(user_seq.frames) < 5 or len(ref_seq.frames) < 5:
                 messages.error(request, 'Trimmed selection too short. Widen the range.')
                 return redirect('compare')
 
@@ -224,11 +266,10 @@ def compare(request):
                     if val > 0:
                         raw_weights[joint] = val
 
+            joint_weights = None
             if raw_weights:
                 total = sum(raw_weights.values())
                 joint_weights = {j: v / total for j, v in raw_weights.items()}
-            else:
-                joint_weights = None
 
             scorer = ConsistencyScorer(joint_weights=joint_weights, dtw_scale=dtw_scale)
             report = scorer.compare(ref_seq, user_seq)
@@ -247,7 +288,7 @@ def compare(request):
 
             analysis_session = AnalysisSession.objects.create(
                 user=request.user,
-                ref_video_name=request.session.get('ref_video_name', 'reference'),
+                ref_video_name=ref_name,
                 user_video_name=request.session.get('user_video_name', 'your shot'),
                 overall_score=report.overall_score,
                 grade=report.grade,
@@ -263,15 +304,20 @@ def compare(request):
             return redirect('results', session_id=analysis_session.id)
 
         finally:
-            for path in (ref_path, user_path):
+            for path in filter(None, [user_path, ref_path if not template_id else None]):
                 try:
                     os.unlink(path)
                 except Exception:
                     pass
-            for key in ('ref_video_path', 'user_video_path', 'ref_video_name', 'user_video_name'):
+            for key in ('user_video_path', 'ref_video_path', 'user_video_name',
+                        'ref_video_name', 'template_id'):
                 request.session.pop(key, None)
 
-    return render(request, 'shot_analyzer/compare.html', {'joint_labels': JOINT_LABELS})
+    templates = PlayerTemplate.objects.all()
+    return render(request, 'shot_analyzer/compare.html', {
+        'joint_labels': JOINT_LABELS,
+        'player_templates': templates,
+    })
 
 
 # ── Results ───────────────────────────────────────────────────────────────────

@@ -60,14 +60,26 @@ class ConsistencyReport:
 
 # ── DTW core ──────────────────────────────────────────────────────────────────
 
+def _z_normalize(arr: np.ndarray) -> np.ndarray:
+    """Z-score normalize a 1-D array: subtract mean and divide by std.
+    This removes absolute-level differences caused by camera angle or body
+    proportions, so DTW compares the *shape* of the motion curve rather than
+    the raw angle values. If the joint barely moves (std ≈ 0), return zeros."""
+    std = np.std(arr)
+    if std < 1e-6:
+        return np.zeros_like(arr)
+    return (arr - np.mean(arr)) / std
+
+
 def _dtw_distance(s1: np.ndarray, s2: np.ndarray) -> float:
     """Compute the Dynamic Time Warping distance between two 1-D angle sequences.
-    DTW finds the optimal alignment between sequences of different lengths or speeds,
-    making it more robust than frame-by-frame subtraction for comparing motion data.
-    NaN values are interpolated before comparison. Returns a non-negative float —
-    lower means the two sequences are more similar."""
-    s1 = _fill_nan(s1)
-    s2 = _fill_nan(s2)
+    Both sequences are Z-score normalized before comparison so that differences
+    in camera angle or body proportions do not inflate the distance — only the
+    temporal shape of the motion matters.
+    NaN values are interpolated before normalization. Returns a non-negative
+    float — lower means the two motion patterns are more similar."""
+    s1 = _z_normalize(_fill_nan(s1))
+    s2 = _z_normalize(_fill_nan(s2))
 
     n, m = len(s1), len(s2)
     dtw = np.full((n + 1, m + 1), np.inf)
@@ -94,11 +106,14 @@ def _fill_nan(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-def _normalize_score(dtw_dist: float, scale: float = 200.0) -> float:
-    """Convert a raw DTW distance into a human-readable 0–100 consistency score
+def _normalize_score(dtw_dist: float, scale: float = 10.0) -> float:
+    """Convert a Z-normalized DTW distance into a 0–100 consistency score
     using exponential decay: score = 100 * exp(-distance / scale).
-    A distance of 0 yields a perfect 100; the scale parameter controls how quickly
-    the score drops — larger scale = more tolerant of deviation."""
+    With Z-normalized inputs, typical distances range 0–30, so scale=10 means:
+      distance 0  → 100 pts (identical pattern)
+      distance 10 → 37 pts  (moderate deviation)
+      distance 20 → 14 pts  (large deviation)
+    Larger scale = more lenient."""
     return float(100.0 * np.exp(-dtw_dist / scale))
 
 
@@ -155,7 +170,7 @@ class ConsistencyScorer:
         report = scorer.compare(reference_sequence, user_sequence)
     """
 
-    def __init__(self, joint_weights: Dict[str, float] = None, dtw_scale: float = 200.0):
+    def __init__(self, joint_weights: Dict[str, float] = None, dtw_scale: float = 10.0):
         """Set up the scorer with optional custom joint weights and a DTW scale factor.
         joint_weights: maps joint name → importance (must sum to 1.0); defaults to JOINT_WEIGHTS.
         dtw_scale: controls score sensitivity — increase to be more lenient with deviations."""

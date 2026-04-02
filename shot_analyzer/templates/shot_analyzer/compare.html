@@ -3,35 +3,99 @@
 
 {% block content %}
 <h1 class="mb-1">Compare Shots</h1>
-<p class="text-muted mb-4">Upload two videos, preview and trim to the shooting motion, then run the analysis.</p>
+<p class="text-muted mb-4">Choose a player reference or upload your own, then upload your shot and trim to the shooting motion.</p>
 
-<!-- ── Step 1: Upload ─────────────────────────────────────────────────── -->
+<!-- ── Step 1: choose reference + upload your video ──────────────────── -->
 <div id="step1">
-  <div class="card">
-    <div class="card-header"><h6 class="mb-0">Step 1 — Upload Videos</h6></div>
+
+  <!-- 1a: Reference selection -->
+  <div class="card mb-3">
+    <div class="card-header">
+      <h6 class="mb-0">Step 1a — Choose Reference</h6>
+    </div>
     <div class="card-body">
-      <div class="row g-3">
-        <div class="col-md-6">
-          <label class="form-label">Reference Video <span class="text-muted">(pro / standard form)</span></label>
-          <input type="file" id="refFileInput" class="form-control" accept="video/*">
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">Your Shot Video</label>
-          <input type="file" id="userFileInput" class="form-control" accept="video/*">
-        </div>
-      </div>
-      <div class="mt-3">
-        <button id="uploadBtn" class="btn btn-primary" onclick="uploadAndPreview()" disabled>
-          Extract Preview Frames
+
+      <!-- Player template tabs -->
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <button class="btn btn-sm btn-primary" id="tabTemplates" onclick="switchTab('templates')">
+          ⭐ Player Templates
         </button>
-        <span class="text-muted ms-3 small">Takes ~5 seconds to load thumbnails</span>
+        <button class="btn btn-sm btn-outline-secondary" id="tabCustom" onclick="switchTab('custom')">
+          📁 Upload Custom Reference
+        </button>
       </div>
-      <div id="uploadError" class="alert alert-danger mt-3 d-none"></div>
+
+      <!-- Template cards -->
+      <div id="panelTemplates">
+        {% if player_templates %}
+        <div class="row g-3">
+          {% for t in player_templates %}
+          <div class="col-6 col-md-4 col-lg-3">
+            <div class="player-card card h-100 {% if forloop.first %}selected{% endif %}"
+                 data-id="{{ t.id }}"
+                 data-name="{{ t.name }}"
+                 onclick="selectTemplate(this)">
+              {% if t.photo %}
+              <img src="{{ t.photo.url }}" class="card-img-top"
+                   style="height:160px; object-fit:cover; object-position:top;">
+              {% else %}
+              <div class="d-flex align-items-center justify-content-center"
+                   style="height:160px; background:#16213E; font-size:4rem;">🏀</div>
+              {% endif %}
+              <div class="card-body text-center py-2">
+                <div class="fw-bold">{{ t.name }}</div>
+                <div class="text-muted small">{{ t.team }}</div>
+                {% if t.style_notes %}
+                <div class="mt-1 text-muted" style="font-size:0.75rem; line-height:1.3;">
+                  {{ t.style_notes|truncatewords:15 }}
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-warning">
+          No player templates loaded.
+          Run <code>python manage.py load_player_templates</code> to create them.
+        </div>
+        {% endif %}
+
+        <!-- Hidden field carries selected template ID -->
+        <input type="hidden" id="selectedTemplateId"
+               value="{% if player_templates %}{{ player_templates.0.id }}{% endif %}">
+      </div>
+
+      <!-- Custom reference upload (hidden by default) -->
+      <div id="panelCustom" class="d-none">
+        <label class="form-label">Reference Video <span class="text-muted">(pro player / standard form)</span></label>
+        <input type="file" id="refFileInput" class="form-control" accept="video/*"
+               onchange="checkFilesReady()">
+      </div>
     </div>
   </div>
+
+  <!-- 1b: Your video upload -->
+  <div class="card mb-3">
+    <div class="card-header"><h6 class="mb-0">Step 1b — Upload Your Shot</h6></div>
+    <div class="card-body">
+      <input type="file" id="userFileInput" class="form-control" accept="video/*"
+             onchange="checkFilesReady()">
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center gap-3">
+    <button id="uploadBtn" class="btn btn-primary" onclick="uploadAndPreview()" disabled>
+      Extract Preview Frames →
+    </button>
+    <span class="text-muted small">Takes ~5 seconds to load thumbnails</span>
+  </div>
+  <div id="uploadError" class="alert alert-danger mt-3 d-none"></div>
 </div>
 
-<!-- ── Step 2: Trim + Settings + Submit ──────────────────────────────── -->
+
+<!-- ── Step 2: Trim + Settings + Run ─────────────────────────────────── -->
 <div id="step2" class="d-none">
 
   <div class="d-flex align-items-center justify-content-between mb-3 mt-4">
@@ -41,49 +105,19 @@
 
   <form id="analyzeForm" method="post" action="{% url 'compare' %}">
     {% csrf_token %}
+    <input type="hidden" name="template_id"    id="formTemplateId"  value="">
+    <input type="hidden" name="ref_start_pct"  id="refStartVal"     value="0">
+    <input type="hidden" name="ref_end_pct"    id="refEndVal"       value="100">
+    <input type="hidden" name="user_start_pct" id="userStartVal"    value="0">
+    <input type="hidden" name="user_end_pct"   id="userEndVal"      value="100">
 
-    <!-- Hidden trim values (updated by sliders via JS) -->
-    <input type="hidden" name="ref_start_pct"  id="refStartVal"  value="0">
-    <input type="hidden" name="ref_end_pct"    id="refEndVal"    value="100">
-    <input type="hidden" name="user_start_pct" id="userStartVal" value="0">
-    <input type="hidden" name="user_end_pct"   id="userEndVal"   value="100">
-
-    <!-- Trim panels -->
+    <!-- Reference panel (shown for custom upload; template shows info card) -->
     <div class="row g-4 mb-4">
-      <!-- Reference trim -->
-      <div class="col-lg-6">
-        <div class="card">
-          <div class="card-header">
-            <h6 class="mb-0">Reference Video — <span id="refFileName" class="text-muted"></span></h6>
-          </div>
-          <div class="card-body">
-            <div class="row g-2 mb-3 text-center">
-              <div class="col-6">
-                <div class="text-muted small mb-1">Start frame</div>
-                <img id="refStartImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
-                <div class="text-warning small mt-1"><span id="refStartPct">0</span>%
-                  &nbsp;(frame <span id="refStartFrame">0</span>)</div>
-              </div>
-              <div class="col-6">
-                <div class="text-muted small mb-1">End frame</div>
-                <img id="refEndImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
-                <div class="text-warning small mt-1"><span id="refEndPct">100</span>%
-                  &nbsp;(frame <span id="refEndFrame">0</span>)</div>
-              </div>
-            </div>
-            <label class="form-label small">Start</label>
-            <input type="range" id="refStartSlider" class="form-range mb-2"
-                   min="0" max="95" step="1" value="0"
-                   oninput="onTrimChange('ref')">
-            <label class="form-label small">End</label>
-            <input type="range" id="refEndSlider" class="form-range"
-                   min="5" max="100" step="1" value="100"
-                   oninput="onTrimChange('ref')">
-          </div>
-        </div>
+
+      <div class="col-lg-6" id="refTrimPanel">
+        <!-- populated by JS based on mode -->
       </div>
 
-      <!-- User trim -->
       <div class="col-lg-6">
         <div class="card">
           <div class="card-header">
@@ -93,25 +127,25 @@
             <div class="row g-2 mb-3 text-center">
               <div class="col-6">
                 <div class="text-muted small mb-1">Start frame</div>
-                <img id="userStartImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
-                <div class="text-warning small mt-1"><span id="userStartPct">0</span>%
-                  &nbsp;(frame <span id="userStartFrame">0</span>)</div>
+                <img id="userStartImg" class="img-fluid rounded" style="max-height:130px;background:#111;">
+                <div class="text-warning small mt-1">
+                  <span id="userStartPct">0</span>% &nbsp;(frame <span id="userStartFrame">0</span>)
+                </div>
               </div>
               <div class="col-6">
                 <div class="text-muted small mb-1">End frame</div>
-                <img id="userEndImg" class="img-fluid rounded" style="max-height:140px;background:#111;">
-                <div class="text-warning small mt-1"><span id="userEndPct">100</span>%
-                  &nbsp;(frame <span id="userEndFrame">0</span>)</div>
+                <img id="userEndImg" class="img-fluid rounded" style="max-height:130px;background:#111;">
+                <div class="text-warning small mt-1">
+                  <span id="userEndPct">100</span>% &nbsp;(frame <span id="userEndFrame">0</span>)
+                </div>
               </div>
             </div>
             <label class="form-label small">Start</label>
             <input type="range" id="userStartSlider" class="form-range mb-2"
-                   min="0" max="95" step="1" value="0"
-                   oninput="onTrimChange('user')">
+                   min="0" max="95" step="1" value="0" oninput="onTrimChange('user')">
             <label class="form-label small">End</label>
             <input type="range" id="userEndSlider" class="form-range"
-                   min="5" max="100" step="1" value="100"
-                   oninput="onTrimChange('user')">
+                   min="5" max="100" step="1" value="100" oninput="onTrimChange('user')">
           </div>
         </div>
       </div>
@@ -123,15 +157,14 @@
         <div class="card">
           <div class="card-header"><h6 class="mb-0">⚙️ DTW Sensitivity</h6></div>
           <div class="card-body">
-            <label class="form-label small">Scale: <span id="dtwVal">200</span></label>
+            <label class="form-label small">Scale: <span id="dtwVal">10</span></label>
             <input type="range" name="dtw_scale" class="form-range"
-                   min="50" max="500" step="50" value="200"
+                   min="2" max="50" step="1" value="10"
                    oninput="document.getElementById('dtwVal').textContent = this.value">
             <div class="form-text">Lower = stricter. Higher = more lenient.</div>
           </div>
         </div>
       </div>
-
       <div class="col-lg-8">
         <div class="card">
           <div class="card-header"><h6 class="mb-0">🦴 Joint Weights</h6></div>
@@ -142,7 +175,7 @@
                 <label class="form-label small mb-1">{{ label }}</label>
                 <div class="d-flex align-items-center gap-2">
                   <input type="range" name="weight_{{ joint }}"
-                         class="form-range flex-grow-1 joint-slider"
+                         class="form-range flex-grow-1"
                          min="0" max="100" step="1"
                          value="{% if joint == 'right_elbow' %}25{% elif joint == 'right_shoulder' %}20{% elif joint == 'right_knee' %}20{% elif joint == 'right_hip' %}15{% elif joint == 'left_elbow' %}10{% elif joint == 'left_shoulder' %}5{% elif joint == 'left_knee' %}5{% else %}0{% endif %}"
                          oninput="this.nextElementSibling.textContent = this.value">
@@ -164,29 +197,52 @@
     <span class="text-muted ms-3 small">MediaPipe processing takes ~30-60 seconds</span>
   </form>
 </div>
+
+<style>
+  .player-card { cursor: pointer; transition: border-color .15s, box-shadow .15s; border: 2px solid #333; }
+  .player-card:hover { border-color: #888; }
+  .player-card.selected { border-color: #F0A500; box-shadow: 0 0 0 2px rgba(240,165,0,.3); }
+</style>
 {% endblock %}
 
 {% block extra_js %}
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
   const state = {
-    ref:  { frames: [], total: 0 },
+    mode: 'templates',   // 'templates' | 'custom'
     user: { frames: [], total: 0 },
+    ref:  { frames: [], total: 0 },
   };
 
-  // Enable upload button only when both files are selected
-  document.getElementById('refFileInput').addEventListener('change', checkFilesReady);
-  document.getElementById('userFileInput').addEventListener('change', checkFilesReady);
+  // ── Tab switching ─────────────────────────────────────────────────────────
+  function switchTab(tab) {
+    state.mode = tab;
+    document.getElementById('panelTemplates').classList.toggle('d-none', tab !== 'templates');
+    document.getElementById('panelCustom').classList.toggle('d-none', tab !== 'custom');
+    document.getElementById('tabTemplates').className =
+      'btn btn-sm ' + (tab === 'templates' ? 'btn-primary' : 'btn-outline-secondary');
+    document.getElementById('tabCustom').className =
+      'btn btn-sm ' + (tab === 'custom' ? 'btn-primary' : 'btn-outline-secondary');
+    checkFilesReady();
+  }
 
+  function selectTemplate(card) {
+    document.querySelectorAll('.player-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    document.getElementById('selectedTemplateId').value = card.dataset.id;
+  }
+
+  // ── Upload button gating ──────────────────────────────────────────────────
   function checkFilesReady() {
-    const ready = document.getElementById('refFileInput').files.length > 0 &&
-                  document.getElementById('userFileInput').files.length > 0;
-    document.getElementById('uploadBtn').disabled = !ready;
+    const userReady = document.getElementById('userFileInput').files.length > 0;
+    const refReady  = state.mode === 'templates' ||
+                      document.getElementById('refFileInput').files.length > 0;
+    document.getElementById('uploadBtn').disabled = !(userReady && refReady);
   }
 
   // ── Step 1: upload & extract thumbnails ───────────────────────────────────
   async function uploadAndPreview() {
-    const btn = document.getElementById('uploadBtn');
+    const btn    = document.getElementById('uploadBtn');
     const errBox = document.getElementById('uploadError');
     errBox.classList.add('d-none');
     btn.disabled = true;
@@ -194,34 +250,83 @@
     document.getElementById('loadingOverlay').classList.add('active');
 
     const fd = new FormData();
-    fd.append('ref_video',  document.getElementById('refFileInput').files[0]);
     fd.append('user_video', document.getElementById('userFileInput').files[0]);
     fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
 
+    if (state.mode === 'templates') {
+      fd.append('template_id', document.getElementById('selectedTemplateId').value);
+    } else {
+      fd.append('ref_video', document.getElementById('refFileInput').files[0]);
+    }
+
     try {
-      const res = await fetch("{% url 'compare_preview' %}", { method: 'POST', body: fd });
+      const res  = await fetch("{% url 'compare_preview' %}", { method: 'POST', body: fd });
       const data = await res.json();
+      if (!res.ok || data.error) { throw new Error(data.error || 'Server error'); }
 
-      if (!res.ok || data.error) {
-        throw new Error(data.error || 'Server error');
-      }
-
-      // Store thumbnails
-      state.ref.frames  = data.ref_frames;
-      state.ref.total   = data.ref_total;
       state.user.frames = data.user_frames;
       state.user.total  = data.user_total;
 
-      // Show filenames
-      document.getElementById('refFileName').textContent =
-        document.getElementById('refFileInput').files[0].name;
+      // Build reference panel
+      const refPanel = document.getElementById('refTrimPanel');
+      if (state.mode === 'templates') {
+        const card = document.querySelector('.player-card.selected');
+        refPanel.innerHTML = `
+          <div class="card h-100">
+            <div class="card-header"><h6 class="mb-0">Reference — ${card.dataset.name}</h6></div>
+            <div class="card-body d-flex flex-column align-items-center justify-content-center text-center py-4">
+              <div style="font-size:4rem;">🏀</div>
+              <div class="fw-bold fs-5 mt-2">${card.dataset.name}</div>
+              <div class="text-muted small mt-1">Pre-loaded shooting template</div>
+              <div class="alert mt-3 p-2 w-100" style="background:#16213E;font-size:.8rem;color:#aaa;">
+                No trim needed — the full shooting motion is already isolated.
+              </div>
+            </div>
+          </div>`;
+        document.getElementById('formTemplateId').value = card.dataset.id;
+      } else {
+        state.ref.frames = data.ref_frames;
+        state.ref.total  = data.ref_total;
+        refPanel.innerHTML = `
+          <div class="card">
+            <div class="card-header">
+              <h6 class="mb-0">Reference Video — <span class="text-muted" id="refFileName"></span></h6>
+            </div>
+            <div class="card-body">
+              <div class="row g-2 mb-3 text-center">
+                <div class="col-6">
+                  <div class="text-muted small mb-1">Start frame</div>
+                  <img id="refStartImg" class="img-fluid rounded" style="max-height:130px;background:#111;">
+                  <div class="text-warning small mt-1">
+                    <span id="refStartPct">0</span>% &nbsp;(frame <span id="refStartFrame">0</span>)
+                  </div>
+                </div>
+                <div class="col-6">
+                  <div class="text-muted small mb-1">End frame</div>
+                  <img id="refEndImg" class="img-fluid rounded" style="max-height:130px;background:#111;">
+                  <div class="text-warning small mt-1">
+                    <span id="refEndPct">100</span>% &nbsp;(frame <span id="refEndFrame">0</span>)
+                  </div>
+                </div>
+              </div>
+              <label class="form-label small">Start</label>
+              <input type="range" id="refStartSlider" class="form-range mb-2"
+                     min="0" max="95" step="1" value="0" oninput="onTrimChange('ref')">
+              <label class="form-label small">End</label>
+              <input type="range" id="refEndSlider" class="form-range"
+                     min="5" max="100" step="1" value="100" oninput="onTrimChange('ref')">
+            </div>
+          </div>`;
+        document.getElementById('refFileName').textContent =
+          document.getElementById('refFileInput').files[0].name;
+        document.getElementById('formTemplateId').value = '';
+        onTrimChange('ref');
+      }
+
       document.getElementById('userFileName').textContent =
         document.getElementById('userFileInput').files[0].name;
 
-      // Initialize previews
-      onTrimChange('ref');
       onTrimChange('user');
-
       document.getElementById('step1').classList.add('d-none');
       document.getElementById('step2').classList.remove('d-none');
 
@@ -229,53 +334,47 @@
       errBox.textContent = 'Error: ' + err.message;
       errBox.classList.remove('d-none');
       btn.disabled = false;
-      btn.textContent = 'Extract Preview Frames';
+      btn.textContent = 'Extract Preview Frames →';
     } finally {
       document.getElementById('loadingOverlay').classList.remove('active');
     }
   }
 
-  // ── Step 2: slider interaction ────────────────────────────────────────────
+  // ── Slider interaction ────────────────────────────────────────────────────
   function onTrimChange(side) {
-    const startSlider = document.getElementById(side + 'StartSlider');
-    const endSlider   = document.getElementById(side + 'EndSlider');
+    const startEl = document.getElementById(side + 'StartSlider');
+    const endEl   = document.getElementById(side + 'EndSlider');
+    if (!startEl || !endEl) { return; }
 
-    let startPct = parseInt(startSlider.value);
-    let endPct   = parseInt(endSlider.value);
+    let startPct = parseInt(startEl.value);
+    let endPct   = parseInt(endEl.value);
 
-    // Enforce start < end with a minimum 5% gap
     if (startPct >= endPct - 5) {
-      if (document.activeElement === startSlider) {
-        startPct = endPct - 5;
-        startSlider.value = startPct;
+      if (document.activeElement === startEl) {
+        startPct = endPct - 5; startEl.value = startPct;
       } else {
-        endPct = startPct + 5;
-        endSlider.value = endPct;
+        endPct = startPct + 5; endEl.value = endPct;
       }
     }
 
     const frames = state[side].frames;
     const total  = state[side].total;
-    const n      = frames.length - 1;  // 0..20 → 0..100%
+    const n      = frames.length - 1;
+    const si     = Math.round(startPct / 100 * n);
+    const ei     = Math.round(endPct   / 100 * n);
 
-    const startIdx = Math.round(startPct / 100 * n);
-    const endIdx   = Math.round(endPct   / 100 * n);
-
-    // Update preview images
-    if (frames[startIdx]) {
-      document.getElementById(side + 'StartImg').src = 'data:image/jpeg;base64,' + frames[startIdx];
+    if (frames[si]) {
+      document.getElementById(side + 'StartImg').src = 'data:image/jpeg;base64,' + frames[si];
     }
-    if (frames[endIdx]) {
-      document.getElementById(side + 'EndImg').src = 'data:image/jpeg;base64,' + frames[endIdx];
+    if (frames[ei]) {
+      document.getElementById(side + 'EndImg').src   = 'data:image/jpeg;base64,' + frames[ei];
     }
 
-    // Update labels
     document.getElementById(side + 'StartPct').textContent   = startPct;
     document.getElementById(side + 'EndPct').textContent     = endPct;
     document.getElementById(side + 'StartFrame').textContent = Math.round(startPct / 100 * (total - 1));
     document.getElementById(side + 'EndFrame').textContent   = Math.round(endPct   / 100 * (total - 1));
 
-    // Sync hidden form fields
     document.getElementById(side + 'StartVal').value = startPct;
     document.getElementById(side + 'EndVal').value   = endPct;
   }
@@ -284,14 +383,15 @@
   function resetToStep1() {
     document.getElementById('step2').classList.add('d-none');
     document.getElementById('step1').classList.remove('d-none');
-    document.getElementById('uploadBtn').disabled = false;
-    document.getElementById('uploadBtn').textContent = 'Extract Preview Frames';
-    document.getElementById('refFileInput').value  = '';
+    document.getElementById('uploadBtn').textContent = 'Extract Preview Frames →';
     document.getElementById('userFileInput').value = '';
+    if (document.getElementById('refFileInput')) {
+      document.getElementById('refFileInput').value = '';
+    }
     checkFilesReady();
   }
 
-  // ── Submit: show loading overlay ──────────────────────────────────────────
+  // ── Submit loading overlay ────────────────────────────────────────────────
   document.getElementById('analyzeForm').addEventListener('submit', function () {
     document.getElementById('loadingOverlay').classList.add('active');
     document.getElementById('runBtn').disabled = true;
