@@ -72,6 +72,34 @@
 </div>
 {% endif %}
 
+<!-- Phase score breakdown -->
+{% if phase_scores %}
+<div class="card mb-4">
+  <div class="card-header"><h6 class="mb-0">📊 Phase Breakdown</h6></div>
+  <div class="card-body">
+    <div class="row g-3">
+      {% for ps in phase_scores %}
+      <div class="col-6 col-md-3">
+        <div class="stat-box">
+          <div class="stat-label mb-1">{{ ps.phase }}</div>
+          <div class="stat-value score-color-{% if ps.score >= 85 %}a{% elif ps.score >= 70 %}b{% elif ps.score >= 55 %}c{% else %}d{% endif %}">
+            {{ ps.score }}
+          </div>
+          <div class="text-muted" style="font-size:0.75rem;">weight {{ ps.weight }}%</div>
+          <div class="mt-1">
+            <div class="progress" style="height:5px; background:#2a2a3e;">
+              <div class="progress-bar {% if ps.score >= 85 %}bg-success{% elif ps.score >= 70 %}bg-primary{% elif ps.score >= 55 %}bg-warning{% else %}bg-danger{% endif %}"
+                   style="width:{{ ps.score }}%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Joint score table -->
 <div class="card mb-4">
   <div class="card-header"><h6 class="mb-0">📋 Detailed Joint Scores</h6></div>

@@ -2,10 +2,12 @@
 consistency_scorer.py
 ----------------------
 DTW-based consistency scoring between two shot sequences.
-Supports: single comparison, multi-shot averaging, joint-level analysis.
+Supports: single comparison, multi-shot averaging, joint-level analysis,
+and phase-level scoring with adjustable per-phase weights.
 """
 
 import numpy as np
+from scipy.signal import savgol_filter
 from typing import Dict, List, Tuple
 from dataclasses import dataclass
 
@@ -25,6 +27,14 @@ JOINT_WEIGHTS: Dict[str, float] = {
     "left_knee":      0.05,
 }
 
+# Default phase weights — Release is most important for shooting form
+PHASE_WEIGHTS_DEFAULT: Dict[str, float] = {
+    "Loading":        0.15,
+    "Rising":         0.20,
+    "Release":        0.45,
+    "Follow-through": 0.20,
+}
+
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
@@ -38,11 +48,20 @@ class JointScore:
 
 
 @dataclass
+class PhaseScore:
+    """Score for one of the four shooting phases."""
+    phase: str
+    score: float              # 0-100
+    weight: float             # relative importance (user-adjustable)
+
+
+@dataclass
 class ConsistencyReport:
     overall_score: float
     joint_scores: List[JointScore]
+    phase_scores: List[PhaseScore]           # one entry per phase
     most_inconsistent_joint: str
-    most_inconsistent_phase: str   # "Loading" / "Rising" / "Release" / "Follow-through"
+    most_inconsistent_phase: str
     feedback: List[str]
 
     @property
@@ -71,17 +90,29 @@ def _z_normalize(arr: np.ndarray) -> np.ndarray:
     return (arr - np.mean(arr)) / std
 
 
+def _smooth(arr: np.ndarray) -> np.ndarray:
+    """Apply Savitzky-Golay smoothing to reduce per-frame pose-detection noise.
+    Uses a window of 9 frames and a 2nd-order polynomial fit.
+    Falls back to a 5-frame window when the sequence is too short for 9."""
+    n = len(arr)
+    if n < 5:
+        return arr
+    window = min(9, n if n % 2 == 1 else n - 1)
+    return savgol_filter(arr, window_length=window, polyorder=2)
+
+
 def _dtw_distance(s1: np.ndarray, s2: np.ndarray) -> float:
     """Compute the Dynamic Time Warping distance between two 1-D angle sequences.
-    Both sequences are Z-score normalized before comparison so that differences
-    in camera angle or body proportions do not inflate the distance — only the
-    temporal shape of the motion matters.
-    NaN values are interpolated before normalization. Returns a non-negative
-    float — lower means the two motion patterns are more similar."""
-    s1 = _z_normalize(_fill_nan(s1))
-    s2 = _z_normalize(_fill_nan(s2))
+    Both sequences are smoothed (Savitzky-Golay), NaN-interpolated, then Z-score
+    normalized before comparison so that differences in camera angle or body
+    proportions do not inflate the distance — only the temporal shape of the
+    motion matters. Returns a non-negative float — lower means more similar."""
+    s1 = _z_normalize(_smooth(_fill_nan(s1)))
+    s2 = _z_normalize(_smooth(_fill_nan(s2)))
 
     n, m = len(s1), len(s2)
+    if n == 0 or m == 0:
+        return 0.0
     dtw = np.full((n + 1, m + 1), np.inf)
     dtw[0, 0] = 0.0
 
@@ -90,7 +121,7 @@ def _dtw_distance(s1: np.ndarray, s2: np.ndarray) -> float:
             cost = abs(s1[i - 1] - s2[j - 1])
             dtw[i, j] = cost + min(dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1])
 
-    return float(dtw[n, m])
+    return float(dtw[n, m] / (n + m))
 
 
 def _fill_nan(arr: np.ndarray) -> np.ndarray:
@@ -106,25 +137,26 @@ def _fill_nan(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-def _normalize_score(dtw_dist: float, scale: float = 10.0) -> float:
-    """Convert a Z-normalized DTW distance into a 0–100 consistency score
-    using exponential decay: score = 100 * exp(-distance / scale).
-    With Z-normalized inputs, typical distances range 0–30, so scale=10 means:
-      distance 0  → 100 pts (identical pattern)
-      distance 10 → 37 pts  (moderate deviation)
-      distance 20 → 14 pts  (large deviation)
+def _normalize_score(dtw_dist: float, scale: float = 0.10) -> float:
+    """Convert a Z-normalized, length-normalized DTW distance into a 0–100 score.
+    After dividing by (n+m), typical distances range 0.0–0.3.
+    scale=0.10 means:
+      distance 0.00 → 100 pts  (identical pattern)
+      distance 0.07 → 50 pts   (moderate deviation)
+      distance 0.15 → 22 pts   (large deviation)
     Larger scale = more lenient."""
     return float(100.0 * np.exp(-dtw_dist / scale))
 
 
 # ── Shot phase detection ──────────────────────────────────────────────────────
 
+PHASE_NAMES = ["Loading", "Rising", "Release", "Follow-through"]
+
+
 def detect_shot_phases(seq: ShotSequence) -> Dict[str, Tuple[int, int]]:
     """Divide a shot sequence into four named phases by splitting frames into equal quarters:
     Loading (0–25%), Rising (25–50%), Release (50–75%), Follow-through (75–100%).
-    Returns a dict mapping phase name → (start_frame, end_frame) index range.
-    Note: this is a simple uniform split; a more advanced version could detect the
-    actual jump point from the knee angle curve for more precise phase boundaries."""
+    Returns a dict mapping phase name → (start_frame, end_frame) index range."""
     n = len(seq.frames)
     q = n // 4
     return {
@@ -135,30 +167,26 @@ def detect_shot_phases(seq: ShotSequence) -> Dict[str, Tuple[int, int]]:
     }
 
 
-def find_most_inconsistent_phase(
-    ref: ShotSequence,
-    user: ShotSequence,
-    joint: str,
-) -> str:
-    """Identify which shot phase has the largest DTW distance for a specific joint.
-    The user sequence is split into four phases; the reference is sliced proportionally
-    to match each phase's relative position. Returns the phase name (e.g. 'Release')
-    where the given joint deviates most from the reference."""
-    phases = detect_shot_phases(user)
-    worst_phase, worst_dist = "Release", -1.0
+# ── Shooting-side detection & joint remapping ─────────────────────────────────
 
-    ref_series  = ref.angle_series(joint)
-    user_series = user.angle_series(joint)
+_MIRROR_JOINTS: Dict[str, str] = {
+    "right_elbow":    "left_elbow",
+    "left_elbow":     "right_elbow",
+    "right_shoulder": "left_shoulder",
+    "left_shoulder":  "right_shoulder",
+    "right_knee":     "left_knee",
+    "left_knee":      "right_knee",
+    "right_hip":      "left_hip",
+    "left_hip":       "right_hip",
+}
 
-    for phase_name, (start, end) in phases.items():
-        r_start = int(start / len(user.frames) * len(ref.frames))
-        r_end   = int(end   / len(user.frames) * len(ref.frames))
-        dist = _dtw_distance(ref_series[r_start:r_end], user_series[start:end])
-        if dist > worst_dist:
-            worst_dist  = dist
-            worst_phase = phase_name
 
-    return worst_phase
+def _detect_shooting_side(seq: ShotSequence) -> str:
+    """Return 'right' or 'left': whichever elbow has the greater range of motion
+    is assumed to be the shooting arm.  Works regardless of camera angle."""
+    right_std = np.std(_fill_nan(seq.angle_series("right_elbow")))
+    left_std  = np.std(_fill_nan(seq.angle_series("left_elbow")))
+    return "right" if right_std >= left_std else "left"
 
 
 # ── Main class ────────────────────────────────────────────────────────────────
@@ -168,48 +196,112 @@ class ConsistencyScorer:
     Usage:
         scorer = ConsistencyScorer()
         report = scorer.compare(reference_sequence, user_sequence)
+
+    Phase-based scoring:
+        Each shot is split into 4 phases (Loading / Rising / Release / Follow-through).
+        Each phase is scored independently by computing DTW across all active joints
+        within that phase slice. The overall score is the weighted average of the
+        four phase scores. Phase weights are user-adjustable.
     """
 
-    def __init__(self, joint_weights: Dict[str, float] = None, dtw_scale: float = 10.0):
-        """Set up the scorer with optional custom joint weights and a DTW scale factor.
-        joint_weights: maps joint name → importance (must sum to 1.0); defaults to JOINT_WEIGHTS.
-        dtw_scale: controls score sensitivity — increase to be more lenient with deviations."""
-        self.weights   = joint_weights or JOINT_WEIGHTS
-        self.dtw_scale = dtw_scale
+    def __init__(
+        self,
+        joint_weights: Dict[str, float] = None,
+        phase_weights: Dict[str, float] = None,
+        dtw_scale: float = 0.10,
+    ):
+        """Set up the scorer with optional custom weights and a DTW scale factor.
+        joint_weights: maps joint name → importance within each phase (must sum to 1.0).
+        phase_weights: maps phase name → importance for overall score (must sum to 1.0).
+        dtw_scale: controls score sensitivity — increase to be more lenient."""
+        self.weights       = joint_weights or JOINT_WEIGHTS
+        self.phase_weights = phase_weights or PHASE_WEIGHTS_DEFAULT
+        self.dtw_scale     = dtw_scale
+
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     def compare(self, ref: ShotSequence, user: ShotSequence) -> ConsistencyReport:
-        """Compare a reference shot sequence against a user shot sequence and produce a full report.
-        For each active joint (weight > 0), computes DTW distance and converts it to a 0–100 score.
-        The overall score is the weighted average across all joints. Also identifies the worst joint,
-        its most inconsistent phase, and generates human-readable feedback."""
-        joint_scores  = []
-        active_joints = [j for j, w in self.weights.items() if w > 0]
+        """Compare a reference shot against a user shot and produce a full report.
 
-        for joint in active_joints:
-            ref_series  = ref.angle_series(joint)
-            user_series = user.angle_series(joint)
-            dist  = _dtw_distance(ref_series, user_series)
-            score = _normalize_score(dist, self.dtw_scale)
-            joint_scores.append(JointScore(
-                joint=joint,
-                dtw_distance=dist,
-                score=score,
-                weight=self.weights[joint],
+        Scoring process:
+          1. Auto-detect shooting sides; mirror user joint labels if opposite sides.
+          2. Split both sequences into 4 phases (proportionally aligned).
+          3. For each phase, compute DTW for each active joint → weighted joint score.
+          4. Phase score = weighted average of its joint scores.
+          5. Overall score = weighted average of the 4 phase scores.
+        """
+        ref_side  = _detect_shooting_side(ref)
+        user_side = _detect_shooting_side(user)
+        joint_map = _MIRROR_JOINTS if ref_side != user_side else {}
+
+        active_joints = [(j, w) for j, w in self.weights.items() if w > 0]
+        n_ref  = len(ref.frames)
+        n_user = len(user.frames)
+
+        user_phases = detect_shot_phases(user)
+
+        phase_scores: List[PhaseScore] = []
+        # Accumulate per-joint scores across phases for joint breakdown
+        joint_score_accum: Dict[str, List[float]] = {j: [] for j, _ in active_joints}
+
+        for phase_name in PHASE_NAMES:
+            u_start, u_end = user_phases[phase_name]
+            # Slice ref proportionally
+            r_start = int(u_start / n_user * n_ref)
+            r_end   = int(u_end   / n_user * n_ref)
+
+            phase_joint_scores: List[Tuple[float, float]] = []  # (score, weight)
+            for joint, weight in active_joints:
+                ref_slice  = ref.angle_series(joint)[r_start:r_end]
+                user_slice = user.angle_series(joint_map.get(joint, joint))[u_start:u_end]
+                if len(ref_slice) < 2 or len(user_slice) < 2:
+                    continue
+                dist  = _dtw_distance(ref_slice, user_slice)
+                score = _normalize_score(dist, self.dtw_scale)
+                phase_joint_scores.append((score, weight))
+                joint_score_accum[joint].append(score)
+
+            if phase_joint_scores:
+                total_w     = sum(w for _, w in phase_joint_scores)
+                phase_score = sum(s * w for s, w in phase_joint_scores) / (total_w + 1e-8)
+            else:
+                phase_score = 50.0
+
+            ph_weight = self.phase_weights.get(phase_name, 0.25)
+            phase_scores.append(PhaseScore(
+                phase=phase_name,
+                score=round(phase_score, 1),
+                weight=ph_weight,
             ))
 
-        total_w = sum(js.weight for js in joint_scores)
-        overall = sum(js.score * js.weight for js in joint_scores) / (total_w + 1e-8)
+        # Overall score = weighted average of phase scores
+        total_ph_w = sum(ps.weight for ps in phase_scores)
+        overall    = sum(ps.score * ps.weight for ps in phase_scores) / (total_ph_w + 1e-8)
 
-        worst = min(joint_scores, key=lambda js: js.score)
-        worst.is_most_inconsistent = True
+        # Per-joint summary: average of that joint's score across all 4 phases
+        joint_scores: List[JointScore] = []
+        for joint, weight in active_joints:
+            scores_list = joint_score_accum[joint]
+            if not scores_list:
+                continue
+            joint_scores.append(JointScore(
+                joint=joint,
+                dtw_distance=0.0,
+                score=round(float(np.mean(scores_list)), 1),
+                weight=weight,
+            ))
 
-        worst_phase = find_most_inconsistent_phase(ref, user, worst.joint)
-        feedback    = self._generate_feedback(joint_scores, worst, worst_phase)
+        worst_joint = min(joint_scores, key=lambda js: js.score)
+        worst_joint.is_most_inconsistent = True
+        worst_phase = min(phase_scores, key=lambda ps: ps.score).phase
+
+        feedback = self._generate_feedback(joint_scores, worst_joint, worst_phase, phase_scores)
 
         return ConsistencyReport(
             overall_score=round(overall, 1),
             joint_scores=sorted(joint_scores, key=lambda js: js.score),
-            most_inconsistent_joint=worst.joint,
+            phase_scores=phase_scores,
+            most_inconsistent_joint=worst_joint.joint,
             most_inconsistent_phase=worst_phase,
             feedback=feedback,
         )
@@ -217,29 +309,37 @@ class ConsistencyScorer:
     def compare_multiple(
         self,
         shots: List[ShotSequence],
-    ) -> Tuple[ConsistencyReport, List[ConsistencyReport]]:
+    ) -> Tuple["ConsistencyReport", List["ConsistencyReport"]]:
         """Measure self-consistency across a series of shots by comparing consecutive pairs.
-        Compares shots[0] vs shots[1], shots[1] vs shots[2], etc., producing one report per pair.
-        Returns a summary report (average score, most frequently worst joint) alongside the
-        full list of per-pair reports. Requires at least 2 shots."""
+        Returns a summary report (average scores) alongside per-pair reports."""
         if len(shots) < 2:
             raise ValueError("Need at least 2 shots to compare.")
 
-        pair_reports = []
-        for i in range(len(shots) - 1):
-            pair_reports.append(self.compare(shots[i], shots[i + 1]))
+        pair_reports = [self.compare(shots[i], shots[i + 1]) for i in range(len(shots) - 1)]
 
         avg_score = np.mean([r.overall_score for r in pair_reports])
+
+        # Most frequently worst joint across pairs
         worst_joint_counts: Dict[str, int] = {}
         for r in pair_reports:
             worst_joint_counts[r.most_inconsistent_joint] = \
                 worst_joint_counts.get(r.most_inconsistent_joint, 0) + 1
-        most_common_worst = max(worst_joint_counts, key=worst_joint_counts.get)
+        most_common_worst_joint = max(worst_joint_counts, key=worst_joint_counts.get)
+
+        # Average phase scores
+        avg_phase_scores: List[PhaseScore] = []
+        for ps in pair_reports[0].phase_scores:
+            avg_s = float(np.mean([r.phase_scores[i].score
+                                   for i, _ in enumerate(r.phase_scores)
+                                   for r in pair_reports
+                                   if r.phase_scores[i].phase == ps.phase]))
+            avg_phase_scores.append(PhaseScore(phase=ps.phase, score=round(avg_s, 1), weight=ps.weight))
 
         summary = ConsistencyReport(
             overall_score=round(float(avg_score), 1),
             joint_scores=pair_reports[0].joint_scores,
-            most_inconsistent_joint=most_common_worst,
+            phase_scores=avg_phase_scores,
+            most_inconsistent_joint=most_common_worst_joint,
             most_inconsistent_phase=pair_reports[0].most_inconsistent_phase,
             feedback=[f"Analyzed {len(shots)} shots — average consistency: {avg_score:.1f}"],
         )
@@ -250,13 +350,11 @@ class ConsistencyScorer:
     def _generate_feedback(
         self,
         joint_scores: List[JointScore],
-        worst: JointScore,
+        worst_joint: JointScore,
         worst_phase: str,
+        phase_scores: List[PhaseScore],
     ) -> List[str]:
-        """Build a list of human-readable feedback strings from the scoring results.
-        Generates an overall assessment based on average score, calls out the most
-        inconsistent joint and its worst phase, and flags any individual joint that
-        scored below 60 as needing focused attention."""
+        """Build a list of human-readable feedback strings from the scoring results."""
         feedback = []
 
         JOINT_LABELS = {
@@ -280,12 +378,25 @@ class ConsistencyScorer:
         else:
             feedback.append("❌ Low consistency — focus on fundamentals first.")
 
-        label = JOINT_LABELS.get(worst.joint, worst.joint)
-        feedback.append(f"🎯 Most inconsistent joint: **{label}** — biggest deviation during **{worst_phase}**.")
+        label = JOINT_LABELS.get(worst_joint.joint, worst_joint.joint)
+        feedback.append(
+            f"🎯 Most inconsistent joint: **{label}** "
+            f"(avg score {worst_joint.score:.0f}) — "
+            f"biggest deviation during **{worst_phase}**."
+        )
 
+        # Call out any phase scoring below 50
+        for ps in phase_scores:
+            if ps.score < 50:
+                feedback.append(
+                    f"📌 **{ps.phase}** phase scored only {ps.score:.0f} — "
+                    f"focus on this part of the motion."
+                )
+
+        # Call out any joint averaging below 60
         for js in joint_scores:
             if js.score < 60:
-                l = JOINT_LABELS.get(js.joint, js.joint)
-                feedback.append(f"📌 {l} scored only {js.score:.0f} — needs focused attention.")
+                lbl = JOINT_LABELS.get(js.joint, js.joint)
+                feedback.append(f"📌 {lbl} averaged {js.score:.0f} across all phases — needs attention.")
 
         return feedback

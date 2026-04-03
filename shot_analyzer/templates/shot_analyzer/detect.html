@@ -1,0 +1,170 @@
+{% extends 'shot_analyzer/base.html' %}
+{% block title %}Detect Shots{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+  <h2 class="mb-1">Auto Shot Detection</h2>
+  <p class="text-muted mb-4">Upload a video with one or more shooting attempts. The app will automatically find each shot and segment it for you.</p>
+
+  <!-- Upload card -->
+  <div class="card mb-4">
+    <div class="card-header"><h6 class="mb-0">Upload Video</h6></div>
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+        <div class="col-md-6">
+          <label class="form-label">Video file (mp4 / mov / avi)</label>
+          <input type="file" id="videoFile" class="form-control" accept="video/*">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Min knee bend: <span id="kneeVal">15</span>°</label>
+          <input type="range" id="kneeDrop" class="form-range" min="5" max="40" step="1" value="15"
+                 oninput="document.getElementById('kneeVal').textContent = this.value">
+          <div class="form-text">Lower = detect subtler shots (may get false positives).</div>
+        </div>
+        <div class="col-md-3">
+          <button class="btn btn-primary w-100" onclick="runDetection()">Detect Shots</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div id="loadingBox" class="text-center py-5" style="display:none">
+    <div class="loading-spinner mx-auto mb-3"></div>
+    <p class="text-muted">Extracting poses and detecting shots — this may take a minute…</p>
+  </div>
+
+  <!-- Error -->
+  <div id="errorBox" class="alert alert-error mb-4" style="display:none"></div>
+
+  <!-- Results -->
+  <div id="resultsSection" style="display:none">
+    <h4 id="resultCount" class="mb-3"></h4>
+
+    <!-- Timeline bar -->
+    <div class="card mb-4">
+      <div class="card-header"><h6 class="mb-0">Timeline</h6></div>
+      <div class="card-body p-2">
+        <div id="timeline" style="position:relative; height:40px; background:#16213E; border-radius:6px; overflow:hidden;"></div>
+        <div class="d-flex justify-content-between mt-1">
+          <span class="text-muted small" id="timelineStart">0s</span>
+          <span class="text-muted small" id="timelineEnd"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shot cards -->
+    <div id="shotCards" class="row g-3"></div>
+  </div>
+</div>
+
+<style>
+  .shot-card { cursor: default; transition: border-color .2s; }
+  .shot-card:hover { border-color: #F0A500 !important; }
+  .shot-card .thumb { width:100%; height:110px; object-fit:cover; border-radius:6px; background:#0a0a14; }
+  .shot-card .thumb-placeholder { width:100%; height:110px; background:#16213E; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#555; font-size:2rem; }
+  .timeline-seg { position:absolute; top:4px; bottom:4px; border-radius:4px; background:#F0A500; opacity:0.8; }
+</style>
+
+<script>
+const CSRFTOKEN = '{{ csrf_token }}';
+
+async function runDetection() {
+  const fileInput = document.getElementById('videoFile');
+  if (!fileInput.files.length) {
+    alert('Please select a video file first.');
+    return;
+  }
+
+  document.getElementById('loadingBox').style.display = 'block';
+  document.getElementById('resultsSection').style.display = 'none';
+  document.getElementById('errorBox').style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('video', fileInput.files[0]);
+  fd.append('min_knee_drop', document.getElementById('kneeDrop').value);
+
+  try {
+    const resp = await fetch('{% url "detect_shots" %}', {
+      method: 'POST',
+      headers: { 'X-CSRFToken': CSRFTOKEN },
+      body: fd,
+    });
+    const data = await resp.json();
+
+    document.getElementById('loadingBox').style.display = 'none';
+
+    if (data.error) {
+      showError(data.error);
+      return;
+    }
+
+    renderResults(data.segments, data.message);
+  } catch (err) {
+    document.getElementById('loadingBox').style.display = 'none';
+    showError('Network error: ' + err.message);
+  }
+}
+
+function showError(msg) {
+  const box = document.getElementById('errorBox');
+  box.textContent = msg;
+  box.style.display = 'block';
+}
+
+function renderResults(segments, message) {
+  const section = document.getElementById('resultsSection');
+  section.style.display = 'block';
+
+  if (!segments.length) {
+    document.getElementById('resultCount').textContent = message || 'No shots detected.';
+    document.getElementById('shotCards').innerHTML = '';
+    document.getElementById('timeline').innerHTML = '';
+    return;
+  }
+
+  document.getElementById('resultCount').textContent =
+    `${segments.length} shot${segments.length > 1 ? 's' : ''} detected`;
+
+  // Timeline
+  const totalSec = segments[segments.length - 1].end_sec;
+  document.getElementById('timelineEnd').textContent = totalSec.toFixed(1) + 's';
+  const timeline = document.getElementById('timeline');
+  timeline.innerHTML = '';
+  segments.forEach(seg => {
+    const bar = document.createElement('div');
+    bar.className = 'timeline-seg';
+    bar.style.left  = (seg.start_sec / totalSec * 100) + '%';
+    bar.style.width = ((seg.end_sec - seg.start_sec) / totalSec * 100) + '%';
+    bar.title = `Shot ${seg.index}: ${seg.start_sec}s – ${seg.end_sec}s`;
+    timeline.appendChild(bar);
+  });
+
+  // Cards
+  const cardsEl = document.getElementById('shotCards');
+  cardsEl.innerHTML = '';
+  segments.forEach(seg => {
+    const col = document.createElement('div');
+    col.className = 'col-sm-6 col-md-4 col-lg-3';
+
+    const thumbHtml = seg.thumbnail
+      ? `<img class="thumb" src="data:image/jpeg;base64,${seg.thumbnail}" alt="Shot ${seg.index}">`
+      : `<div class="thumb-placeholder">🏀</div>`;
+
+    col.innerHTML = `
+      <div class="card shot-card h-100">
+        <div class="card-body p-2">
+          ${thumbHtml}
+          <div class="mt-2">
+            <div class="fw-bold text-warning mb-1">Shot ${seg.index}</div>
+            <div class="small text-muted">${seg.start_sec.toFixed(2)}s – ${seg.end_sec.toFixed(2)}s</div>
+            <div class="small text-muted">${seg.duration_sec.toFixed(2)}s duration</div>
+            <div class="small text-muted">Frames ${seg.start_frame}–${seg.end_frame}</div>
+          </div>
+        </div>
+      </div>`;
+    cardsEl.appendChild(col);
+  });
+}
+</script>
+{% endblock %}

@@ -19,8 +19,9 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.consistency_scorer import JOINT_WEIGHTS, ConsistencyScorer
+from core.consistency_scorer import JOINT_WEIGHTS, PHASE_WEIGHTS_DEFAULT, ConsistencyScorer
 from core.pose_extractor import PoseExtractor, ShotSequence
+from core.shot_detector import ShotDetector
 from core.shot_featurizer import featurize
 from core.shot_trainer import ShotModelFitter
 from utils.visualizer import (
@@ -230,7 +231,8 @@ def compare(request):
         user_end_pct   = float(request.POST.get('user_end_pct',  100))
         ref_start_pct  = float(request.POST.get('ref_start_pct',  0))
         ref_end_pct    = float(request.POST.get('ref_end_pct',   100))
-        dtw_scale      = int(request.POST.get('dtw_scale', 10))
+        # Slider sends integer 1–20; divide by 100 to get actual scale (0.01–0.20)
+        dtw_scale = int(request.POST.get('dtw_scale', 10)) / 100.0
 
         try:
             extractor = PoseExtractor()
@@ -271,7 +273,25 @@ def compare(request):
                 total = sum(raw_weights.values())
                 joint_weights = {j: v / total for j, v in raw_weights.items()}
 
-            scorer = ConsistencyScorer(joint_weights=joint_weights, dtw_scale=dtw_scale)
+            # Read phase weights from the four sliders (integer 0–100 each)
+            raw_phase = {}
+            for phase in ["Loading", "Rising", "Release", "Follow-through"]:
+                # HTML name strips '-' and ' ' → e.g. "followthrough"
+                key = f'phase_weight_{phase.lower().replace("-", "").replace(" ", "")}'
+                val = request.POST.get(key)
+                if val is not None:
+                    raw_phase[phase] = max(0, int(val))
+            phase_weights = None
+            if raw_phase:
+                ph_total = sum(raw_phase.values())
+                if ph_total > 0:
+                    phase_weights = {p: v / ph_total for p, v in raw_phase.items()}
+
+            scorer = ConsistencyScorer(
+                joint_weights=joint_weights,
+                phase_weights=phase_weights,
+                dtw_scale=dtw_scale,
+            )
             report = scorer.compare(ref_seq, user_seq)
 
             joint_scores_data = [
@@ -286,6 +306,15 @@ def compare(request):
                 for js in report.joint_scores if js.weight > 0
             ]
 
+            phase_scores_data = [
+                {
+                    'phase':  ps.phase,
+                    'score':  ps.score,
+                    'weight': round(ps.weight * 100, 1),
+                }
+                for ps in report.phase_scores
+            ]
+
             analysis_session = AnalysisSession.objects.create(
                 user=request.user,
                 ref_video_name=ref_name,
@@ -296,6 +325,7 @@ def compare(request):
                 most_inconsistent_phase=report.most_inconsistent_phase,
                 feedback_json=json.dumps(report.feedback),
                 joint_scores_json=json.dumps(joint_scores_data),
+                phase_scores_json=json.dumps(phase_scores_data),
                 chart_score_card=_fig_to_base64(plot_score_card(report)),
                 chart_radar=_fig_to_base64(plot_radar(report)),
                 chart_joint_bars=_fig_to_base64(plot_joint_bars(report)),
@@ -315,8 +345,9 @@ def compare(request):
 
     templates = PlayerTemplate.objects.all()
     return render(request, 'shot_analyzer/compare.html', {
-        'joint_labels': JOINT_LABELS,
+        'joint_labels':    JOINT_LABELS,
         'player_templates': templates,
+        'phase_weights':   PHASE_WEIGHTS_DEFAULT,
     })
 
 
@@ -326,11 +357,65 @@ def compare(request):
 def results(request, session_id):
     session = get_object_or_404(AnalysisSession, id=session_id, user=request.user)
     return render(request, 'shot_analyzer/results.html', {
-        'session': session,
-        'feedback': json.loads(session.feedback_json),
+        'session':      session,
+        'feedback':     json.loads(session.feedback_json),
         'joint_scores': json.loads(session.joint_scores_json),
+        'phase_scores': json.loads(session.phase_scores_json),
         'joint_labels': JOINT_LABELS,
     })
+
+
+# ── Detect shots ──────────────────────────────────────────────────────────────
+
+@login_required
+def detect_shots(request):
+    """AJAX endpoint: upload a long video, detect individual shooting motions,
+    return detected segments as JSON with base64 thumbnails."""
+    if request.method == 'GET':
+        return render(request, 'shot_analyzer/detect.html')
+
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    if 'video' not in request.FILES:
+        return JsonResponse({'error': 'Video file required.'}, status=400)
+
+    video_path = _save_temp_video(request.FILES['video'])
+    try:
+        detector = ShotDetector(
+            min_knee_drop_deg=float(request.POST.get('min_knee_drop', 15)),
+        )
+        full_seq, segments = detector.detect_from_video(video_path)
+
+        if not segments:
+            return JsonResponse({'segments': [], 'message': 'No shooting motions detected. Try lowering the sensitivity threshold.'})
+
+        results_list = []
+        for i, seg in enumerate(segments):
+            thumb_b64 = None
+            if seg.thumbnail is not None:
+                _, buf = cv2.imencode('.jpg', seg.thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                thumb_b64 = base64.b64encode(buf.tobytes()).decode('utf-8')
+
+            results_list.append({
+                'index':       i + 1,
+                'start_frame': seg.start_frame,
+                'end_frame':   seg.end_frame,
+                'start_sec':   round(seg.start_sec, 2),
+                'end_sec':     round(seg.end_sec, 2),
+                'duration_sec': round(seg.duration_sec, 2),
+                'thumbnail':   thumb_b64,
+            })
+
+        return JsonResponse({'segments': results_list})
+
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=500)
+    finally:
+        try:
+            os.unlink(video_path)
+        except Exception:
+            pass
 
 
 # ── History ───────────────────────────────────────────────────────────────────

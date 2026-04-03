@@ -9,10 +9,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.figure import Figure
+from scipy.signal import savgol_filter
 from typing import Dict, List, Optional, Tuple
 import io
 
 from core.pose_extractor import ShotSequence
+
+
+def _smooth_series(arr: np.ndarray) -> np.ndarray:
+    """Smooth a joint-angle time series with Savitzky-Golay to reduce pose-detection noise."""
+    filled = arr.copy()
+    nan_mask = np.isnan(filled)
+    if nan_mask.all():
+        return np.zeros_like(filled)
+    indices = np.arange(len(filled))
+    filled[nan_mask] = np.interp(indices[nan_mask], indices[~nan_mask], filled[~nan_mask])
+    n = len(filled)
+    if n < 5:
+        return filled
+    window = min(9, n if n % 2 == 1 else n - 1)
+    return savgol_filter(filled, window_length=window, polyorder=2)
 from core.consistency_scorer import ConsistencyReport, JointScore
 
 
@@ -67,8 +83,8 @@ def plot_angle_curves(
     fig.patch.set_facecolor("#1A1A2E")
 
     for ax, joint in zip(axes, joints):
-        ref_series  = ref.angle_series(joint)
-        user_series = user.angle_series(joint)
+        ref_series  = _smooth_series(ref.angle_series(joint))
+        user_series = _smooth_series(user.angle_series(joint))
 
         ref_t  = np.linspace(0, 100, len(ref_series))
         user_t = np.linspace(0, 100, len(user_series))

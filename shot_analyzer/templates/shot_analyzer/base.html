@@ -91,6 +91,10 @@
              href="{% url 'score' %}">Score My Shot</a>
         </li>
         <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'detect_shots' %}active{% endif %}"
+             href="{% url 'detect_shots' %}">Detect Shots</a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'history' %}active{% endif %}"
              href="{% url 'history' %}">History</a>
         </li>

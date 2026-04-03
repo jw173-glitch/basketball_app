@@ -34,6 +34,7 @@ class AnalysisSession(models.Model):
     chart_radar = models.TextField()         # base64 PNG
     chart_joint_bars = models.TextField()    # base64 PNG
     chart_angle_curves = models.TextField(blank=True)  # base64 PNG
+    phase_scores_json  = models.TextField(default='[]')  # JSON list[dict]
 
     class Meta:
         ordering = ['-created_at']

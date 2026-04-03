@@ -14,4 +14,5 @@ urlpatterns = [
     path('training/',           views.training,            name='training'),
     path('training/status/',    views.training_status_api, name='training_status'),
     path('score/',              views.score,               name='score'),
+    path('detect/',             views.detect_shots,        name='detect_shots'),
 ]
