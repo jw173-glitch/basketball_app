@@ -49,6 +49,7 @@ class TrainingSample(models.Model):
     video_name = models.CharField(max_length=255)
     label = models.IntegerField()            # 1 = made, 0 = missed
     features_json = models.TextField()       # JSON list[float], 58-dim vector
+    sequence_json = models.TextField(blank=True, default='')  # serialized angle time series
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -72,6 +73,7 @@ class PersonalModel(models.Model):
     training_status = models.CharField(max_length=20, default='idle')
     # idle | running | complete | error
     training_message = models.TextField(blank=True)
+    reference_sequence_json = models.TextField(blank=True, default='')  # averaged made-shot sequence
 
     def __str__(self):
         return f'{self.user.username} | {self.training_status}'

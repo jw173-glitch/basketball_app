@@ -15,4 +15,5 @@ urlpatterns = [
     path('training/status/',    views.training_status_api, name='training_status'),
     path('score/',              views.score,               name='score'),
     path('detect/',             views.detect_shots,        name='detect_shots'),
+    path('training/consistency/', views.consistency_check, name='consistency_check'),
 ]

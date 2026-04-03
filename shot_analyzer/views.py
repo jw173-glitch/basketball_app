@@ -35,7 +35,7 @@ from utils.visualizer import (
 
 from .forms import ScoreShotForm, TrainingSampleForm
 from .models import AnalysisSession, PersonalModel, PlayerTemplate, TrainingSample
-from .services import start_training_thread
+from .services import serialize_sequence, start_training_thread
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -451,6 +451,7 @@ def training(request):
                             video_name=request.FILES['video'].name,
                             label=int(form.cleaned_data['label']),
                             features_json=json.dumps(features.tolist()),
+                            sequence_json=serialize_sequence(seq),
                         )
                         n_made   = TrainingSample.objects.filter(user=request.user, label=1).count()
                         n_missed = TrainingSample.objects.filter(user=request.user, label=0).count()
@@ -504,6 +505,56 @@ def training_status_api(request):
         'accuracy':   personal_model.accuracy_pct,
         'trained_at': personal_model.trained_at.isoformat() if personal_model.trained_at else None,
     })
+
+
+@login_required
+def consistency_check(request):
+    """AJAX endpoint: upload a shot video, compare it against the user's personal
+    reference sequence (averaged from their made shots), and return a consistency score."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    personal_model = _get_or_create_personal_model(request.user)
+    if not personal_model.reference_sequence_json:
+        return JsonResponse({'error': 'No personal reference yet. Train your model first.'}, status=400)
+
+    if 'video' not in request.FILES:
+        return JsonResponse({'error': 'Video file required.'}, status=400)
+
+    video_path = _save_temp_video(request.FILES['video'])
+    try:
+        extractor = PoseExtractor()
+        user_seq = extractor.process_video(video_path, annotate=False, max_frames=300)
+
+        if len(user_seq.frames) < 5:
+            return JsonResponse({'error': 'Not enough pose frames detected. Make sure your full body is visible.'}, status=400)
+
+        ref_seq = _deserialize_template_sequence(personal_model.reference_sequence_json)
+
+        scorer = ConsistencyScorer(dtw_scale=0.10)
+        report = scorer.compare(ref_seq, user_seq)
+
+        phase_breakdown = [
+            {'phase': ps.phase, 'score': ps.score, 'weight': round(ps.weight * 100, 1)}
+            for ps in report.phase_scores
+        ]
+
+        return JsonResponse({
+            'overall_score':  report.overall_score,
+            'grade':          report.grade,
+            'worst_phase':    report.most_inconsistent_phase,
+            'worst_joint':    report.most_inconsistent_joint,
+            'phase_scores':   phase_breakdown,
+            'feedback':       report.feedback,
+        })
+
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=500)
+    finally:
+        try:
+            os.unlink(video_path)
+        except Exception:
+            pass
 
 
 # ── Score ─────────────────────────────────────────────────────────────────────

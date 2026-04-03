@@ -111,8 +111,68 @@
     {% endif %}
   </div>
 
-  <!-- Sample list -->
+  <!-- Consistency check (only shown when reference sequence exists) -->
+  {% if personal_model.reference_sequence_json %}
   <div class="col-lg-7">
+    <div class="card mb-4">
+      <div class="card-header"><h6 class="mb-0">📐 Check Shot Consistency</h6></div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Upload a new shot and compare it against your personal reference
+          (averaged from your <strong>{{ personal_model.n_made }} made shots</strong>).
+          No reference video needed.
+        </p>
+        <input type="file" id="consistencyVideoInput" class="form-control mb-3" accept="video/*">
+        <button class="btn btn-primary w-100" onclick="runConsistencyCheck()">
+          Check Consistency
+        </button>
+
+        <!-- Loading -->
+        <div id="consistencyLoading" class="text-center py-3" style="display:none;">
+          <div class="loading-spinner mx-auto mb-2"></div>
+          <p class="text-muted small">Extracting pose and comparing…</p>
+        </div>
+
+        <!-- Error -->
+        <div id="consistencyError" class="alert alert-error mt-3" style="display:none;"></div>
+
+        <!-- Result -->
+        <div id="consistencyResult" style="display:none;" class="mt-3">
+          <hr style="border-color:#333;">
+          <div class="row g-2 text-center mb-3">
+            <div class="col-4">
+              <div class="stat-box">
+                <div class="stat-label">Consistency</div>
+                <div class="stat-value" id="cScore" style="font-size:2rem;">—</div>
+              </div>
+            </div>
+            <div class="col-4">
+              <div class="stat-box">
+                <div class="stat-label">Grade</div>
+                <div class="stat-value" id="cGrade" style="font-size:2rem;">—</div>
+              </div>
+            </div>
+            <div class="col-4">
+              <div class="stat-box">
+                <div class="stat-label">Weakest Phase</div>
+                <div class="stat-value small" id="cWorstPhase" style="font-size:1rem; padding-top:0.5rem;">—</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Phase breakdown -->
+          <div id="cPhaseBreakdown" class="row g-2 mb-3"></div>
+
+          <!-- Feedback -->
+          <div id="cFeedback"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Sample list -->
+  <div class="{% if personal_model.reference_sequence_json %}col-lg-12{% else %}col-lg-7{% endif %}">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h6 class="mb-0">Training Samples ({{ samples|length }})</h6>
@@ -160,6 +220,81 @@
 {% block extra_js %}
 <script>
   const currentStatus = '{{ personal_model.training_status }}';
+
+  async function runConsistencyCheck() {
+    const fileInput = document.getElementById('consistencyVideoInput');
+    if (!fileInput || !fileInput.files.length) {
+      alert('Please select a video file first.');
+      return;
+    }
+
+    document.getElementById('consistencyLoading').style.display = 'block';
+    document.getElementById('consistencyResult').style.display = 'none';
+    document.getElementById('consistencyError').style.display = 'none';
+
+    const fd = new FormData();
+    fd.append('video', fileInput.files[0]);
+
+    try {
+      const resp = await fetch('{% url "consistency_check" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+        body: fd,
+      });
+      const data = await resp.json();
+      document.getElementById('consistencyLoading').style.display = 'none';
+
+      if (data.error) {
+        const el = document.getElementById('consistencyError');
+        el.textContent = data.error;
+        el.style.display = 'block';
+        return;
+      }
+
+      renderConsistencyResult(data);
+    } catch (err) {
+      document.getElementById('consistencyLoading').style.display = 'none';
+      const el = document.getElementById('consistencyError');
+      el.textContent = 'Network error: ' + err.message;
+      el.style.display = 'block';
+    }
+  }
+
+  function renderConsistencyResult(data) {
+    const score = data.overall_score;
+    const gradeColor = score >= 85 ? '#2ECC71' : score >= 70 ? '#4A90D9' : score >= 55 ? '#F39C12' : '#E74C3C';
+
+    document.getElementById('cScore').textContent = score;
+    document.getElementById('cScore').style.color = gradeColor;
+    document.getElementById('cGrade').textContent = data.grade;
+    document.getElementById('cGrade').style.color = gradeColor;
+    document.getElementById('cWorstPhase').textContent = data.worst_phase;
+
+    // Phase breakdown
+    const phaseEl = document.getElementById('cPhaseBreakdown');
+    phaseEl.innerHTML = (data.phase_scores || []).map(ps => {
+      const c = ps.score >= 85 ? 'success' : ps.score >= 70 ? 'primary' : ps.score >= 55 ? 'warning' : 'danger';
+      return `
+        <div class="col-6 col-md-3">
+          <div class="stat-box">
+            <div class="stat-label small">${ps.phase}</div>
+            <div class="fw-bold text-${c === 'warning' ? 'warning' : c === 'success' ? 'success' : c === 'primary' ? 'primary' : 'danger'}"
+                 style="font-size:1.4rem;">${ps.score}</div>
+            <div class="progress mt-1" style="height:4px; background:#2a2a3e;">
+              <div class="progress-bar bg-${c}" style="width:${ps.score}%"></div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    // Feedback
+    const fbEl = document.getElementById('cFeedback');
+    fbEl.innerHTML = (data.feedback || []).map(f =>
+      `<p class="small mb-1">${f}</p>`
+    ).join('');
+
+    document.getElementById('consistencyResult').style.display = 'block';
+  }
 
   document.getElementById('addSampleForm').addEventListener('submit', function () {
     document.getElementById('loadingOverlay').classList.add('active');
