@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import os
 import sys
 import tempfile
@@ -19,7 +20,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.consistency_scorer import JOINT_WEIGHTS, PHASE_WEIGHTS_DEFAULT, ConsistencyScorer
+from core.consistency_scorer import JOINT_WEIGHTS, ConsistencyScorer
 from core.pose_extractor import PoseExtractor, ShotSequence
 from core.shot_detector import ShotDetector
 from core.shot_featurizer import featurize
@@ -180,20 +181,38 @@ def extract_preview_frames(request):
             except Exception:
                 pass
 
+    def _detect_and_cache(video_path: str, session_key: str):
+        """Run ShotDetector on a video, cache the full sequence in session,
+        and return the detected first shot's start/end as percentages (0-100)."""
+        detector = ShotDetector()
+        full_seq, segments = detector.detect_from_video(video_path)
+        request.session[session_key] = serialize_sequence(full_seq)
+        if segments:
+            n = len(full_seq.frames)
+            start_pct = round(segments[0].start_frame / n * 100, 1)
+            end_pct   = round(segments[0].end_frame   / n * 100, 1)
+            return start_pct, end_pct
+        return 0.0, 100.0
+
     try:
         user_path = _save_temp_video(request.FILES['user_video'])
         request.session['user_video_path'] = user_path
         request.session['user_video_name'] = request.FILES['user_video'].name
 
         user_thumbs, user_total = _extract_thumbnails(user_path)
+        user_start_pct, user_end_pct = _detect_and_cache(user_path, 'user_sequence_json')
+
         response_data = {
-            'user_frames': user_thumbs,
-            'user_total':  user_total,
+            'user_frames':     user_thumbs,
+            'user_total':      user_total,
+            'user_start_pct':  user_start_pct,
+            'user_end_pct':    user_end_pct,
         }
 
         if using_template:
             request.session['template_id'] = request.POST['template_id']
             request.session.pop('ref_video_path', None)
+            request.session.pop('ref_sequence_json', None)
         else:
             ref_path = _save_temp_video(request.FILES['ref_video'])
             request.session['ref_video_path'] = ref_path
@@ -201,8 +220,12 @@ def extract_preview_frames(request):
             request.session.pop('template_id', None)
 
             ref_thumbs, ref_total = _extract_thumbnails(ref_path)
-            response_data['ref_frames'] = ref_thumbs
-            response_data['ref_total']  = ref_total
+            ref_start_pct, ref_end_pct = _detect_and_cache(ref_path, 'ref_sequence_json')
+
+            response_data['ref_frames']    = ref_thumbs
+            response_data['ref_total']     = ref_total
+            response_data['ref_start_pct'] = ref_start_pct
+            response_data['ref_end_pct']   = ref_end_pct
 
         return JsonResponse(response_data)
 
@@ -236,7 +259,13 @@ def compare(request):
 
         try:
             extractor = PoseExtractor()
-            user_seq = extractor.process_video(user_path, annotate=True, max_frames=300)
+
+            # Reuse cached sequence from Step 1 if available, otherwise re-extract
+            user_seq_json = request.session.get('user_sequence_json')
+            if user_seq_json:
+                user_seq = _deserialize_template_sequence(user_seq_json)
+            else:
+                user_seq = extractor.process_video(user_path, annotate=False, max_frames=300)
 
             if len(user_seq.frames) < 5:
                 messages.error(request, 'Not enough pose frames detected in your video.')
@@ -249,7 +278,11 @@ def compare(request):
                 ref_seq = _deserialize_template_sequence(template.sequence_json)
                 ref_name = f'{template.name} (Template)'
             else:
-                ref_seq = extractor.process_video(ref_path, annotate=True, max_frames=300)
+                ref_seq_json = request.session.get('ref_sequence_json')
+                if ref_seq_json:
+                    ref_seq = _deserialize_template_sequence(ref_seq_json)
+                else:
+                    ref_seq = extractor.process_video(ref_path, annotate=False, max_frames=300)
                 if len(ref_seq.frames) < 5:
                     messages.error(request, 'Not enough pose frames in the reference video.')
                     return redirect('compare')
@@ -273,25 +306,7 @@ def compare(request):
                 total = sum(raw_weights.values())
                 joint_weights = {j: v / total for j, v in raw_weights.items()}
 
-            # Read phase weights from the four sliders (integer 0–100 each)
-            raw_phase = {}
-            for phase in ["Loading", "Rising", "Release", "Follow-through"]:
-                # HTML name strips '-' and ' ' → e.g. "followthrough"
-                key = f'phase_weight_{phase.lower().replace("-", "").replace(" ", "")}'
-                val = request.POST.get(key)
-                if val is not None:
-                    raw_phase[phase] = max(0, int(val))
-            phase_weights = None
-            if raw_phase:
-                ph_total = sum(raw_phase.values())
-                if ph_total > 0:
-                    phase_weights = {p: v / ph_total for p, v in raw_phase.items()}
-
-            scorer = ConsistencyScorer(
-                joint_weights=joint_weights,
-                phase_weights=phase_weights,
-                dtw_scale=dtw_scale,
-            )
+            scorer = ConsistencyScorer(joint_weights=joint_weights, dtw_scale=dtw_scale)
             report = scorer.compare(ref_seq, user_seq)
 
             joint_scores_data = [
@@ -299,20 +314,11 @@ def compare(request):
                     'joint':                js.joint,
                     'label':                JOINT_LABELS.get(js.joint, js.joint),
                     'score':                round(js.score, 1),
-                    'dtw_distance':         round(js.dtw_distance, 1),
+                    'dtw_distance':         round(js.dtw_distance, 4),
                     'weight':               round(js.weight * 100, 1),
                     'is_most_inconsistent': js.is_most_inconsistent,
                 }
                 for js in report.joint_scores if js.weight > 0
-            ]
-
-            phase_scores_data = [
-                {
-                    'phase':  ps.phase,
-                    'score':  ps.score,
-                    'weight': round(ps.weight * 100, 1),
-                }
-                for ps in report.phase_scores
             ]
 
             analysis_session = AnalysisSession.objects.create(
@@ -322,10 +328,8 @@ def compare(request):
                 overall_score=report.overall_score,
                 grade=report.grade,
                 most_inconsistent_joint=report.most_inconsistent_joint,
-                most_inconsistent_phase=report.most_inconsistent_phase,
                 feedback_json=json.dumps(report.feedback),
                 joint_scores_json=json.dumps(joint_scores_data),
-                phase_scores_json=json.dumps(phase_scores_data),
                 chart_score_card=_fig_to_base64(plot_score_card(report)),
                 chart_radar=_fig_to_base64(plot_radar(report)),
                 chart_joint_bars=_fig_to_base64(plot_joint_bars(report)),
@@ -340,14 +344,14 @@ def compare(request):
                 except Exception:
                     pass
             for key in ('user_video_path', 'ref_video_path', 'user_video_name',
-                        'ref_video_name', 'template_id'):
+                        'ref_video_name', 'template_id',
+                        'user_sequence_json', 'ref_sequence_json'):
                 request.session.pop(key, None)
 
     templates = PlayerTemplate.objects.all()
     return render(request, 'shot_analyzer/compare.html', {
-        'joint_labels':    JOINT_LABELS,
+        'joint_labels':     JOINT_LABELS,
         'player_templates': templates,
-        'phase_weights':   PHASE_WEIGHTS_DEFAULT,
     })
 
 
@@ -360,7 +364,6 @@ def results(request, session_id):
         'session':      session,
         'feedback':     json.loads(session.feedback_json),
         'joint_scores': json.loads(session.joint_scores_json),
-        'phase_scores': json.loads(session.phase_scores_json),
         'joint_labels': JOINT_LABELS,
     })
 
@@ -408,6 +411,60 @@ def detect_shots(request):
             })
 
         return JsonResponse({'segments': results_list})
+
+    except Exception as exc:
+        return JsonResponse({'error': str(exc)}, status=500)
+    finally:
+        try:
+            os.unlink(video_path)
+        except Exception:
+            pass
+@login_required
+def process_frame_viewer(request):
+    """AJAX endpoint: upload a video, run MediaPipe on every frame, return
+    annotated frame images (base64 JPEG) and per-frame joint angles as JSON."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    if 'video' not in request.FILES:
+        return JsonResponse({'error': 'Video file required.'}, status=400)
+
+    video_path = _save_temp_video(request.FILES['video'])
+    try:
+        extractor = PoseExtractor()
+        sequence = extractor.process_video(video_path, annotate=True, max_frames=300)
+
+        if not sequence.frames:
+            return JsonResponse({'error': 'No pose detected in video. Check lighting and camera angle.'}, status=400)
+
+        frames_payload = []
+        for fd in sequence.frames:
+            img_b64 = None
+            if fd.image is not None:
+                h, w = fd.image.shape[:2]
+                target_w = 640
+                thumb = cv2.resize(fd.image, (target_w, int(h * target_w / w)))
+                _, buf = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 68])
+                img_b64 = base64.b64encode(buf.tobytes()).decode('utf-8')
+
+            clean_angles = {}
+            for joint_name, angle_val in fd.angles.items():
+                if angle_val is None or (isinstance(angle_val, float) and math.isnan(angle_val)):
+                    clean_angles[joint_name] = None
+                else:
+                    clean_angles[joint_name] = round(float(angle_val), 1)
+
+            frames_payload.append({
+                'idx':    fd.frame_idx,
+                'img':    img_b64,
+                'angles': clean_angles,
+            })
+
+        return JsonResponse({
+            'frames': frames_payload,
+            'fps':    round(sequence.fps, 2),
+            'total':  len(frames_payload),
+        })
 
     except Exception as exc:
         return JsonResponse({'error': str(exc)}, status=500)
@@ -534,18 +591,16 @@ def consistency_check(request):
         scorer = ConsistencyScorer(dtw_scale=0.10)
         report = scorer.compare(ref_seq, user_seq)
 
-        phase_breakdown = [
-            {'phase': ps.phase, 'score': ps.score, 'weight': round(ps.weight * 100, 1)}
-            for ps in report.phase_scores
-        ]
-
         return JsonResponse({
-            'overall_score':  report.overall_score,
-            'grade':          report.grade,
-            'worst_phase':    report.most_inconsistent_phase,
-            'worst_joint':    report.most_inconsistent_joint,
-            'phase_scores':   phase_breakdown,
-            'feedback':       report.feedback,
+            'overall_score': report.overall_score,
+            'grade':         report.grade,
+            'worst_joint':   report.most_inconsistent_joint,
+            'feedback':      report.feedback,
+            'joint_scores':  [
+                {'joint': js.joint, 'label': JOINT_LABELS.get(js.joint, js.joint),
+                 'score': js.score, 'is_worst': js.is_most_inconsistent}
+                for js in report.joint_scores if js.weight > 0
+            ],
         })
 
     except Exception as exc:

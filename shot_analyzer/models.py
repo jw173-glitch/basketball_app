@@ -27,14 +27,12 @@ class AnalysisSession(models.Model):
     overall_score = models.FloatField()
     grade = models.CharField(max_length=5)
     most_inconsistent_joint = models.CharField(max_length=50)
-    most_inconsistent_phase = models.CharField(max_length=50)
     feedback_json = models.TextField()       # JSON list[str]
     joint_scores_json = models.TextField()   # JSON list[dict]
     chart_score_card = models.TextField()    # base64 PNG
     chart_radar = models.TextField()         # base64 PNG
     chart_joint_bars = models.TextField()    # base64 PNG
     chart_angle_curves = models.TextField(blank=True)  # base64 PNG
-    phase_scores_json  = models.TextField(default='[]')  # JSON list[dict]
 
     class Meta:
         ordering = ['-created_at']

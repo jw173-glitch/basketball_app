@@ -89,7 +89,7 @@
     <button id="uploadBtn" class="btn btn-primary" onclick="uploadAndPreview()" disabled>
       Extract Preview Frames →
     </button>
-    <span class="text-muted small">Takes ~5 seconds to load thumbnails</span>
+    <span class="text-muted small">Takes ~20-30s — extracts poses and auto-detects shot boundaries</span>
   </div>
   <div id="uploadError" class="alert alert-danger mt-3 d-none"></div>
 </div>
@@ -152,69 +152,6 @@
     </div>
 
     <!-- Settings -->
-    <!-- Row 1: sensitivity + phase weights -->
-    <div class="row g-4 mb-3">
-      <div class="col-lg-4">
-        <div class="card h-100">
-          <div class="card-header"><h6 class="mb-0">⚙️ Scoring Sensitivity</h6></div>
-          <div class="card-body">
-            <label class="form-label small">Strictness: <span id="dtwVal">10</span>/20</label>
-            <input type="range" name="dtw_scale" class="form-range"
-                   min="1" max="20" step="1" value="10"
-                   oninput="document.getElementById('dtwVal').textContent = this.value">
-            <div class="form-text">Lower = stricter (harder to get high scores). Default 10.</div>
-          </div>
-        </div>
-      </div>
-      <div class="col-lg-8">
-        <div class="card h-100">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <h6 class="mb-0">📊 Phase Weights</h6>
-            <span class="text-muted small">Total: <span id="phaseWeightTotal">100</span></span>
-          </div>
-          <div class="card-body">
-            <div class="row g-3">
-              <!-- Phase sliders: name must match views.py key derivation -->
-              <div class="col-6 col-md-3">
-                <label class="form-label small mb-1 d-flex justify-content-between">
-                  <span>Loading</span><span class="text-warning" id="phaseVal_loading">15</span>
-                </label>
-                <input type="range" name="phase_weight_loading" class="form-range phase-weight-slider"
-                       min="0" max="100" step="1" value="15"
-                       oninput="updatePhaseTotal(this,'phaseVal_loading')">
-              </div>
-              <div class="col-6 col-md-3">
-                <label class="form-label small mb-1 d-flex justify-content-between">
-                  <span>Rising</span><span class="text-warning" id="phaseVal_rising">20</span>
-                </label>
-                <input type="range" name="phase_weight_rising" class="form-range phase-weight-slider"
-                       min="0" max="100" step="1" value="20"
-                       oninput="updatePhaseTotal(this,'phaseVal_rising')">
-              </div>
-              <div class="col-6 col-md-3">
-                <label class="form-label small mb-1 d-flex justify-content-between">
-                  <span>Release</span><span class="text-warning" id="phaseVal_release">45</span>
-                </label>
-                <input type="range" name="phase_weight_release" class="form-range phase-weight-slider"
-                       min="0" max="100" step="1" value="45"
-                       oninput="updatePhaseTotal(this,'phaseVal_release')">
-              </div>
-              <div class="col-6 col-md-3">
-                <label class="form-label small mb-1 d-flex justify-content-between">
-                  <span>Follow-through</span><span class="text-warning" id="phaseVal_followthrough">20</span>
-                </label>
-                <input type="range" name="phase_weight_followthrough" class="form-range phase-weight-slider"
-                       min="0" max="100" step="1" value="20"
-                       oninput="updatePhaseTotal(this,'phaseVal_followthrough')">
-              </div>
-            </div>
-            <div class="form-text mt-2">Weights are normalized automatically. Release phase is most important for shooting form.</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Row 2: joint weights -->
     <div class="row g-4 mb-4">
       <div class="col-12">
         <div class="card">
@@ -236,6 +173,33 @@
                 </div>
               </div>
               {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Strictness -->
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0">🎯 Scoring Strictness</h6></div>
+          <div class="card-body">
+            <div class="row align-items-center g-3">
+              <div class="col-md-8">
+                <div class="d-flex align-items-center gap-3">
+                  <span class="text-muted small" style="min-width:60px;">Lenient</span>
+                  <input type="range" name="dtw_scale" id="dtw_scale_slider"
+                         class="form-range flex-grow-1"
+                         min="1" max="20" step="1" value="10"
+                         oninput="document.getElementById('dtw_scale_val').textContent = this.value">
+                  <span class="text-muted small" style="min-width:60px; text-align:right;">Strict</span>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <span class="text-warning small">Level: <strong id="dtw_scale_val">10</strong> / 20</span>
+              </div>
+            </div>
+            <div class="text-muted mt-2" style="font-size:0.75rem;">
+              Higher = more sensitive to angle differences → lower scores. Default: 10.
             </div>
           </div>
         </div>
@@ -387,7 +351,24 @@
       document.getElementById('userFileName').textContent =
         document.getElementById('userFileInput').files[0].name;
 
+      // Auto-set user trim sliders from detected shot boundaries
+      if (data.user_start_pct !== undefined) {
+        document.getElementById('userStartSlider').value = Math.round(data.user_start_pct);
+        document.getElementById('userEndSlider').value   = Math.round(data.user_end_pct);
+      }
       onTrimChange('user');
+
+      // Auto-set ref trim sliders if custom ref was uploaded
+      if (data.ref_start_pct !== undefined) {
+        const refStart = document.getElementById('refStartSlider');
+        const refEnd   = document.getElementById('refEndSlider');
+        if (refStart && refEnd) {
+          refStart.value = Math.round(data.ref_start_pct);
+          refEnd.value   = Math.round(data.ref_end_pct);
+          onTrimChange('ref');
+        }
+      }
+
       document.getElementById('step1').classList.add('d-none');
       document.getElementById('step2').classList.remove('d-none');
 

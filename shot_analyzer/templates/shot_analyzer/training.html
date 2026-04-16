@@ -152,16 +152,7 @@
                 <div class="stat-value" id="cGrade" style="font-size:2rem;">—</div>
               </div>
             </div>
-            <div class="col-4">
-              <div class="stat-box">
-                <div class="stat-label">Weakest Phase</div>
-                <div class="stat-value small" id="cWorstPhase" style="font-size:1rem; padding-top:0.5rem;">—</div>
-              </div>
             </div>
-          </div>
-
-          <!-- Phase breakdown -->
-          <div id="cPhaseBreakdown" class="row g-2 mb-3"></div>
 
           <!-- Feedback -->
           <div id="cFeedback"></div>
@@ -268,24 +259,6 @@
     document.getElementById('cScore').style.color = gradeColor;
     document.getElementById('cGrade').textContent = data.grade;
     document.getElementById('cGrade').style.color = gradeColor;
-    document.getElementById('cWorstPhase').textContent = data.worst_phase;
-
-    // Phase breakdown
-    const phaseEl = document.getElementById('cPhaseBreakdown');
-    phaseEl.innerHTML = (data.phase_scores || []).map(ps => {
-      const c = ps.score >= 85 ? 'success' : ps.score >= 70 ? 'primary' : ps.score >= 55 ? 'warning' : 'danger';
-      return `
-        <div class="col-6 col-md-3">
-          <div class="stat-box">
-            <div class="stat-label small">${ps.phase}</div>
-            <div class="fw-bold text-${c === 'warning' ? 'warning' : c === 'success' ? 'success' : c === 'primary' ? 'primary' : 'danger'}"
-                 style="font-size:1.4rem;">${ps.score}</div>
-            <div class="progress mt-1" style="height:4px; background:#2a2a3e;">
-              <div class="progress-bar bg-${c}" style="width:${ps.score}%"></div>
-            </div>
-          </div>
-        </div>`;
-    }).join('');
 
     // Feedback
     const fbEl = document.getElementById('cFeedback');

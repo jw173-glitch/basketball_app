@@ -29,6 +29,33 @@ def _smooth_series(arr: np.ndarray) -> np.ndarray:
         return filled
     window = min(9, n if n % 2 == 1 else n - 1)
     return savgol_filter(filled, window_length=window, polyorder=2)
+
+
+def _align_for_plot(ref: np.ndarray, user: np.ndarray):
+    """Time-align two smoothed series using cross-correlation, then trim to overlap.
+    Uses Z-normalized copies to find the lag, but returns original-scale values
+    so the chart still shows meaningful degree values."""
+    from scipy.signal import correlate
+
+    def z_norm(a):
+        std = np.std(a)
+        return (a - np.mean(a)) / std if std > 1e-6 else np.zeros_like(a)
+
+    ref_z  = z_norm(ref)
+    user_z = z_norm(user)
+
+    corr   = correlate(ref_z, user_z, mode='full')
+    lag    = int(np.argmax(corr)) - (len(user_z) - 1)
+    max_lag = int(min(len(ref), len(user)) * 0.30)
+    lag    = int(np.clip(lag, -max_lag, max_lag))
+
+    if lag > 0:
+        ref  = ref[lag:]
+    elif lag < 0:
+        user = user[-lag:]
+
+    min_len = min(len(ref), len(user))
+    return ref[:min_len], user[:min_len]
 from core.consistency_scorer import ConsistencyReport, JointScore
 
 
@@ -86,13 +113,15 @@ def plot_angle_curves(
         ref_series  = _smooth_series(ref.angle_series(joint))
         user_series = _smooth_series(user.angle_series(joint))
 
-        ref_t  = np.linspace(0, 100, len(ref_series))
-        user_t = np.linspace(0, 100, len(user_series))
+        # Apply same cross-correlation alignment used in DTW scoring
+        ref_series, user_series = _align_for_plot(ref_series, user_series)
+
+        shared_t = np.linspace(0, 100, len(ref_series))
 
         ax.set_facecolor("#16213E")
-        ax.plot(ref_t,  ref_series,  color=COLOR_REF,  lw=2.0, label="Reference", alpha=0.9)
-        ax.plot(user_t, user_series, color=COLOR_USER, lw=2.0, label="Your Shot",  alpha=0.9, linestyle="--")
-        ax.fill_between(ref_t, ref_series, alpha=0.1, color=COLOR_REF)
+        ax.plot(shared_t, ref_series,  color=COLOR_REF,  lw=2.0, label="Reference", alpha=0.9)
+        ax.plot(shared_t, user_series, color=COLOR_USER, lw=2.0, label="Your Shot",  alpha=0.9, linestyle="--")
+        ax.fill_between(shared_t, ref_series, alpha=0.1, color=COLOR_REF)
 
         ax.set_ylabel(f"{JOINT_LABELS.get(joint, joint)}\nAngle (°)", color="white", fontsize=9)
         ax.tick_params(colors="white", labelsize=8)
@@ -160,7 +189,7 @@ def plot_score_card(report: ConsistencyReport, figsize: Tuple[int, int] = (6, 4)
     ax.text(0.5, 0.42, f"Grade {report.grade}", transform=ax.transAxes,
             ha="center", va="center", fontsize=24, color="white", alpha=0.85)
 
-    ax.text(0.5, 0.20, f"Most inconsistent: {JOINT_LABELS.get(report.most_inconsistent_joint, '')}  |  Worst phase: {report.most_inconsistent_phase}",
+    ax.text(0.5, 0.20, f"Most inconsistent joint: {JOINT_LABELS.get(report.most_inconsistent_joint, '')}",
             transform=ax.transAxes, ha="center", va="center", fontsize=11, color="#AAAAAA")
 
     return fig

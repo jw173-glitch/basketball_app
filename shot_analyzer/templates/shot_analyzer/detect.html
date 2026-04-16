@@ -1,170 +1,434 @@
 {% extends 'shot_analyzer/base.html' %}
-{% block title %}Detect Shots{% endblock %}
+{% block title %}Pose Inspector{% endblock %}
 
 {% block content %}
-<div class="container py-4">
-  <h2 class="mb-1">Auto Shot Detection</h2>
-  <p class="text-muted mb-4">Upload a video with one or more shooting attempts. The app will automatically find each shot and segment it for you.</p>
+<h1 class="mb-1">Pose Inspector</h1>
+<p class="text-muted mb-3">Upload a video to scrub through every frame with MediaPipe skeleton overlay and live joint angle readout.</p>
 
-  <!-- Upload card -->
-  <div class="card mb-4">
-    <div class="card-header"><h6 class="mb-0">Upload Video</h6></div>
-    <div class="card-body">
-      <div class="row g-3 align-items-end">
-        <div class="col-md-6">
-          <label class="form-label">Video file (mp4 / mov / avi)</label>
-          <input type="file" id="videoFile" class="form-control" accept="video/*">
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Min knee bend: <span id="kneeVal">15</span>°</label>
-          <input type="range" id="kneeDrop" class="form-range" min="5" max="40" step="1" value="15"
-                 oninput="document.getElementById('kneeVal').textContent = this.value">
-          <div class="form-text">Lower = detect subtler shots (may get false positives).</div>
-        </div>
-        <div class="col-md-3">
-          <button class="btn btn-primary w-100" onclick="runDetection()">Detect Shots</button>
-        </div>
+<!-- Upload card -->
+<div class="card mb-4" id="uploadCard">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-7">
+        <label class="form-label">Video file (mp4 / mov / avi)</label>
+        <input type="file" id="videoFile" class="form-control" accept="video/*"
+               onchange="document.getElementById('loadBtn').disabled = !this.files.length">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Max frames: <span id="maxFramesVal">300</span></label>
+        <input type="range" id="maxFrames" class="form-range" min="30" max="300" step="30" value="300"
+               oninput="document.getElementById('maxFramesVal').textContent = this.value">
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary w-100" id="loadBtn" onclick="loadVideo()" disabled>
+          Analyze
+        </button>
       </div>
     </div>
-  </div>
-
-  <!-- Loading -->
-  <div id="loadingBox" class="text-center py-5" style="display:none">
-    <div class="loading-spinner mx-auto mb-3"></div>
-    <p class="text-muted">Extracting poses and detecting shots — this may take a minute…</p>
-  </div>
-
-  <!-- Error -->
-  <div id="errorBox" class="alert alert-error mb-4" style="display:none"></div>
-
-  <!-- Results -->
-  <div id="resultsSection" style="display:none">
-    <h4 id="resultCount" class="mb-3"></h4>
-
-    <!-- Timeline bar -->
-    <div class="card mb-4">
-      <div class="card-header"><h6 class="mb-0">Timeline</h6></div>
-      <div class="card-body p-2">
-        <div id="timeline" style="position:relative; height:40px; background:#16213E; border-radius:6px; overflow:hidden;"></div>
-        <div class="d-flex justify-content-between mt-1">
-          <span class="text-muted small" id="timelineStart">0s</span>
-          <span class="text-muted small" id="timelineEnd"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Shot cards -->
-    <div id="shotCards" class="row g-3"></div>
   </div>
 </div>
 
+<!-- Loading -->
+<div id="loadingBox" class="text-center py-5" style="display:none">
+  <div class="loading-spinner mx-auto mb-3"></div>
+  <p class="text-muted" id="loadingMsg">Extracting poses — this may take 30-60 seconds…</p>
+</div>
+
+<!-- Error -->
+<div id="errorBox" class="alert alert-danger mb-4" style="display:none"></div>
+
+<!-- Viewer -->
+<div id="viewerSection" style="display:none">
+
+  <!-- Top row: frame + angles -->
+  <div class="row g-3 mb-3">
+
+    <!-- Frame display -->
+    <div class="col-lg-8">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div>
+            <span class="fw-bold">Frame</span>
+            <span id="currentFrameNum" class="text-warning ms-1">0</span>
+            <span class="text-muted"> / </span>
+            <span id="totalFrameNum" class="text-muted">0</span>
+          </div>
+          <div class="text-muted small">
+            <span id="currentTimeSec">0.00</span>s &nbsp;/&nbsp; <span id="totalTimeSec">0.00</span>s
+            &nbsp;·&nbsp; <span id="fpsDisplay">30</span> fps
+          </div>
+        </div>
+        <div class="card-body p-0 position-relative">
+          <img id="frameImg" class="d-block mx-auto"
+               style="background:#0a0a14; max-height:320px; max-width:100%; object-fit:contain;" alt="">
+          <!-- No-pose overlay -->
+          <div id="noPoseOverlay" class="position-absolute top-50 start-50 translate-middle
+               text-center" style="display:none; pointer-events:none;">
+            <div style="background:rgba(0,0,0,.65); border-radius:8px; padding:12px 20px;">
+              <div style="font-size:1.8rem;">⚠️</div>
+              <div class="text-warning small">No pose detected</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-footer p-3">
+          <input type="range" id="frameScrubber" class="form-range" min="0" max="0" step="1" value="0"
+                 oninput="goToFrame(parseInt(this.value))">
+          <div class="d-flex justify-content-between mt-1">
+            <span class="text-muted" style="font-size:.75rem;">◀ ▶ arrow keys to step frames</span>
+            <span class="text-muted" style="font-size:.75rem;" id="detectedNotice"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Angles panel -->
+    <div class="col-lg-4">
+      <div class="card h-100">
+        <div class="card-header"><h6 class="mb-0">Joint Angles</h6></div>
+        <div class="card-body p-2" id="anglesPanel">
+          <!-- populated by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom row: angle timeline -->
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <h6 class="mb-0">Angle Timeline</h6>
+      <div class="d-flex flex-wrap gap-1" id="jointToggles"></div>
+    </div>
+    <div class="card-body p-2">
+      <canvas id="angleChart" style="width:100%; height:130px; cursor:crosshair; display:block;"></canvas>
+    </div>
+  </div>
+
+  <!-- Re-upload -->
+  <button class="btn btn-outline-secondary btn-sm" onclick="resetViewer()">← Upload Different Video</button>
+</div>
+
 <style>
-  .shot-card { cursor: default; transition: border-color .2s; }
-  .shot-card:hover { border-color: #F0A500 !important; }
-  .shot-card .thumb { width:100%; height:110px; object-fit:cover; border-radius:6px; background:#0a0a14; }
-  .shot-card .thumb-placeholder { width:100%; height:110px; background:#16213E; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#555; font-size:2rem; }
-  .timeline-seg { position:absolute; top:4px; bottom:4px; border-radius:4px; background:#F0A500; opacity:0.8; }
-</style>
-
-<script>
-const CSRFTOKEN = '{{ csrf_token }}';
-
-async function runDetection() {
-  const fileInput = document.getElementById('videoFile');
-  if (!fileInput.files.length) {
-    alert('Please select a video file first.');
-    return;
+  #anglesPanel .angle-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 6px; border-radius: 6px;
+    margin-bottom: 4px; background: #16213E;
   }
+  #anglesPanel .angle-label { flex: 1; font-size: .78rem; color: #aaa; }
+  #anglesPanel .angle-val   { font-size: 1.1rem; font-weight: 700; min-width: 48px; text-align: right; }
+  #anglesPanel .angle-bar   {
+    height: 5px; border-radius: 3px; background: #0d0d1a;
+    flex-basis: 60px; position: relative; overflow: hidden;
+  }
+  #anglesPanel .angle-fill  { height: 100%; border-radius: 3px; transition: width .1s; }
+</style>
+{% endblock %}
 
-  document.getElementById('loadingBox').style.display = 'block';
-  document.getElementById('resultsSection').style.display = 'none';
-  document.getElementById('errorBox').style.display = 'none';
+{% block extra_js %}
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const JOINT_LABELS = {
+  right_elbow:    'R Elbow',
+  left_elbow:     'L Elbow',
+  right_shoulder: 'R Shoulder',
+  left_shoulder:  'L Shoulder',
+  right_knee:     'R Knee',
+  left_knee:      'L Knee',
+  right_hip:      'R Hip',
+  left_hip:       'L Hip',
+};
+
+const JOINT_COLORS = {
+  right_elbow:    '#4A90D9',
+  left_elbow:     '#74B9FF',
+  right_shoulder: '#E84855',
+  left_shoulder:  '#FF7675',
+  right_knee:     '#F0A500',
+  left_knee:      '#FFEAA7',
+  right_hip:      '#2ECC71',
+  left_hip:       '#55EFC4',
+};
+
+let allFrames  = [];
+let fps        = 30;
+let totalCount = 0;
+let currentIdx = 0;
+let activeJoints = new Set(['right_elbow', 'right_shoulder', 'right_knee', 'right_hip']);
+
+// ── Load video ────────────────────────────────────────────────────────────────
+async function loadVideo() {
+  const fileInput = document.getElementById('videoFile');
+  if (!fileInput.files.length) { return; }
+
+  document.getElementById('uploadCard').style.display    = 'none';
+  document.getElementById('loadingBox').style.display    = 'block';
+  document.getElementById('errorBox').style.display      = 'none';
+  document.getElementById('viewerSection').style.display = 'none';
 
   const fd = new FormData();
   fd.append('video', fileInput.files[0]);
-  fd.append('min_knee_drop', document.getElementById('kneeDrop').value);
+  fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
 
   try {
-    const resp = await fetch('{% url "detect_shots" %}', {
-      method: 'POST',
-      headers: { 'X-CSRFToken': CSRFTOKEN },
-      body: fd,
-    });
+    const resp = await fetch('{% url "detect_process" %}', { method: 'POST', body: fd });
     const data = await resp.json();
 
     document.getElementById('loadingBox').style.display = 'none';
 
     if (data.error) {
       showError(data.error);
+      document.getElementById('uploadCard').style.display = 'block';
       return;
     }
 
-    renderResults(data.segments, data.message);
+    allFrames  = data.frames;   // [{idx, img, angles}, ...]
+    fps        = data.fps;
+    totalCount = data.total;
+
+    initViewer();
   } catch (err) {
     document.getElementById('loadingBox').style.display = 'none';
     showError('Network error: ' + err.message);
+    document.getElementById('uploadCard').style.display = 'block';
   }
+}
+
+// ── Init viewer ───────────────────────────────────────────────────────────────
+function initViewer() {
+  document.getElementById('totalFrameNum').textContent  = totalCount - 1;
+  document.getElementById('totalTimeSec').textContent   = ((totalCount - 1) / fps).toFixed(2);
+  document.getElementById('fpsDisplay').textContent     = fps.toFixed(1);
+
+  const scrubber = document.getElementById('frameScrubber');
+  scrubber.max   = totalCount - 1;
+  scrubber.value = 0;
+
+  buildAngleRows();
+  buildJointToggles();
+
+  document.getElementById('viewerSection').style.display = 'block';
+  goToFrame(0);
+  drawTimeline();
+}
+
+// ── Go to frame ───────────────────────────────────────────────────────────────
+function goToFrame(n) {
+  n = Math.max(0, Math.min(n, totalCount - 1));
+  currentIdx = n;
+  document.getElementById('frameScrubber').value = n;
+
+  const frameData = allFrames[n];
+  document.getElementById('currentFrameNum').textContent = n;
+  document.getElementById('currentTimeSec').textContent  = (n / fps).toFixed(2);
+
+  const imgEl    = document.getElementById('frameImg');
+  const noPoseEl = document.getElementById('noPoseOverlay');
+
+  if (frameData && frameData.img) {
+    imgEl.src = 'data:image/jpeg;base64,' + frameData.img;
+    noPoseEl.style.display = 'none';
+  } else {
+    imgEl.src = '';
+    noPoseEl.style.display = 'block';
+  }
+
+  updateAngleRows(frameData ? frameData.angles : {});
+  updateTimelineCursor();
+}
+
+// ── Angle rows ────────────────────────────────────────────────────────────────
+function buildAngleRows() {
+  const panel = document.getElementById('anglesPanel');
+  panel.innerHTML = '';
+  Object.entries(JOINT_LABELS).forEach(([joint, label]) => {
+    const row = document.createElement('div');
+    row.className  = 'angle-row';
+    row.id         = 'row_' + joint;
+    row.innerHTML  = `
+      <span class="angle-label">${label}</span>
+      <span class="angle-val" id="val_${joint}" style="color:${JOINT_COLORS[joint]};">—</span>
+      <div class="angle-bar">
+        <div class="angle-fill" id="bar_${joint}"
+             style="background:${JOINT_COLORS[joint]}; width:0%;"></div>
+      </div>`;
+    panel.appendChild(row);
+  });
+}
+
+function angleColor(val) {
+  if (val === null || val === undefined) { return '#555'; }
+  if (val < 60)  { return '#E84855'; }
+  if (val < 100) { return '#F0A500'; }
+  if (val < 150) { return '#2ECC71'; }
+  return '#4A90D9';
+}
+
+function updateAngleRows(angles) {
+  Object.keys(JOINT_LABELS).forEach(joint => {
+    const val    = (angles && angles[joint] != null) ? angles[joint] : null;
+    const valEl  = document.getElementById('val_' + joint);
+    const barEl  = document.getElementById('bar_' + joint);
+    if (!valEl) { return; }
+    if (val !== null) {
+      valEl.textContent = val.toFixed(1) + '°';
+      valEl.style.color = angleColor(val);
+      barEl.style.width = (val / 180 * 100).toFixed(1) + '%';
+      barEl.style.background = angleColor(val);
+    } else {
+      valEl.textContent = '—';
+      valEl.style.color = '#555';
+      barEl.style.width = '0%';
+    }
+  });
+}
+
+// ── Joint toggles ─────────────────────────────────────────────────────────────
+function buildJointToggles() {
+  const container = document.getElementById('jointToggles');
+  container.innerHTML = '';
+  Object.entries(JOINT_LABELS).forEach(([joint, label]) => {
+    const btn = document.createElement('button');
+    btn.className   = 'btn btn-sm';
+    btn.id          = 'toggle_' + joint;
+    btn.textContent = label;
+    btn.style.cssText = `font-size:.72rem; padding:2px 8px; border:1px solid ${JOINT_COLORS[joint]};
+      background: ${activeJoints.has(joint) ? JOINT_COLORS[joint] : 'transparent'};
+      color: ${activeJoints.has(joint) ? '#000' : JOINT_COLORS[joint]};`;
+    btn.onclick = () => toggleJoint(joint, btn);
+    container.appendChild(btn);
+  });
+}
+
+function toggleJoint(joint, btn) {
+  if (activeJoints.has(joint)) {
+    activeJoints.delete(joint);
+    btn.style.background = 'transparent';
+    btn.style.color      = JOINT_COLORS[joint];
+  } else {
+    activeJoints.add(joint);
+    btn.style.background = JOINT_COLORS[joint];
+    btn.style.color      = '#000';
+  }
+  drawTimeline();
+}
+
+// ── Canvas timeline ───────────────────────────────────────────────────────────
+function drawTimeline() {
+  const canvas = document.getElementById('angleChart');
+  canvas.width  = canvas.offsetWidth  * window.devicePixelRatio;
+  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+  const ctx  = canvas.getContext('2d');
+  const dpr  = window.devicePixelRatio;
+  const W    = canvas.width;
+  const H    = canvas.height;
+  const padL = 30 * dpr, padR = 8 * dpr, padT = 8 * dpr, padB = 18 * dpr;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#16213E';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines at 45, 90, 135
+  [45, 90, 135].forEach(deg => {
+    const y = padT + plotH - (deg / 180) * plotH;
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth   = dpr;
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = `${9 * dpr}px sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.fillText(deg + '°', padL - 3 * dpr, y + 3 * dpr);
+  });
+
+  if (totalCount < 2) { return; }
+
+  const xForFrame = f => padL + (f / (totalCount - 1)) * plotW;
+  const yForAngle = a => padT + plotH - (a / 180) * plotH;
+
+  // Draw each active joint series
+  activeJoints.forEach(joint => {
+    const color = JOINT_COLORS[joint];
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5 * dpr;
+    ctx.beginPath();
+    let started = false;
+    allFrames.forEach((fd, i) => {
+      const val = fd.angles && fd.angles[joint] != null ? fd.angles[joint] : null;
+      if (val === null) { started = false; return; }
+      const x = xForFrame(i);
+      const y = yForAngle(val);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else           { ctx.lineTo(x, y); }
+    });
+    ctx.stroke();
+  });
+
+  // Current frame cursor
+  const cx = xForFrame(currentIdx);
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth   = 1.5 * dpr;
+  ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, H - padB); ctx.stroke();
+
+  // Time axis labels
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.font = `${8 * dpr}px sans-serif`;
+  ctx.textAlign = 'center';
+  const labelCount = 6;
+  for (let i = 0; i <= labelCount; i++) {
+    const frac = i / labelCount;
+    const x    = padL + frac * plotW;
+    const t    = (frac * (totalCount - 1) / fps).toFixed(1);
+    ctx.fillText(t + 's', x, H - 3 * dpr);
+  }
+}
+
+function updateTimelineCursor() {
+  drawTimeline();
+}
+
+// Seek on canvas click
+document.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('angleChart');
+  canvas.addEventListener('click', e => {
+    if (!totalCount) { return; }
+    const rect  = canvas.getBoundingClientRect();
+    const dpr   = window.devicePixelRatio;
+    const padL  = 30;
+    const plotW = rect.width - padL - 8;
+    const x     = e.clientX - rect.left - padL;
+    const frac  = Math.max(0, Math.min(1, x / plotW));
+    goToFrame(Math.round(frac * (totalCount - 1)));
+  });
+
+  // Keyboard navigation
+  document.addEventListener('keydown', e => {
+    if (!totalCount) { return; }
+    if (e.key === 'ArrowRight') { goToFrame(currentIdx + 1); }
+    if (e.key === 'ArrowLeft')  { goToFrame(currentIdx - 1); }
+  });
+
+  window.addEventListener('resize', () => {
+    if (totalCount) { drawTimeline(); }
+  });
+});
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+function resetViewer() {
+  allFrames  = [];
+  totalCount = 0;
+  currentIdx = 0;
+  document.getElementById('viewerSection').style.display = 'none';
+  document.getElementById('uploadCard').style.display    = 'block';
+  document.getElementById('videoFile').value             = '';
+  document.getElementById('loadBtn').disabled            = true;
 }
 
 function showError(msg) {
   const box = document.getElementById('errorBox');
   box.textContent = msg;
   box.style.display = 'block';
-}
-
-function renderResults(segments, message) {
-  const section = document.getElementById('resultsSection');
-  section.style.display = 'block';
-
-  if (!segments.length) {
-    document.getElementById('resultCount').textContent = message || 'No shots detected.';
-    document.getElementById('shotCards').innerHTML = '';
-    document.getElementById('timeline').innerHTML = '';
-    return;
-  }
-
-  document.getElementById('resultCount').textContent =
-    `${segments.length} shot${segments.length > 1 ? 's' : ''} detected`;
-
-  // Timeline
-  const totalSec = segments[segments.length - 1].end_sec;
-  document.getElementById('timelineEnd').textContent = totalSec.toFixed(1) + 's';
-  const timeline = document.getElementById('timeline');
-  timeline.innerHTML = '';
-  segments.forEach(seg => {
-    const bar = document.createElement('div');
-    bar.className = 'timeline-seg';
-    bar.style.left  = (seg.start_sec / totalSec * 100) + '%';
-    bar.style.width = ((seg.end_sec - seg.start_sec) / totalSec * 100) + '%';
-    bar.title = `Shot ${seg.index}: ${seg.start_sec}s – ${seg.end_sec}s`;
-    timeline.appendChild(bar);
-  });
-
-  // Cards
-  const cardsEl = document.getElementById('shotCards');
-  cardsEl.innerHTML = '';
-  segments.forEach(seg => {
-    const col = document.createElement('div');
-    col.className = 'col-sm-6 col-md-4 col-lg-3';
-
-    const thumbHtml = seg.thumbnail
-      ? `<img class="thumb" src="data:image/jpeg;base64,${seg.thumbnail}" alt="Shot ${seg.index}">`
-      : `<div class="thumb-placeholder">🏀</div>`;
-
-    col.innerHTML = `
-      <div class="card shot-card h-100">
-        <div class="card-body p-2">
-          ${thumbHtml}
-          <div class="mt-2">
-            <div class="fw-bold text-warning mb-1">Shot ${seg.index}</div>
-            <div class="small text-muted">${seg.start_sec.toFixed(2)}s – ${seg.end_sec.toFixed(2)}s</div>
-            <div class="small text-muted">${seg.duration_sec.toFixed(2)}s duration</div>
-            <div class="small text-muted">Frames ${seg.start_frame}–${seg.end_frame}</div>
-          </div>
-        </div>
-      </div>`;
-    cardsEl.appendChild(col);
-  });
 }
 </script>
 {% endblock %}

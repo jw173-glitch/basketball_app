@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python manage.py makemigrations --name remove_phase_fields)"
+    ]
+  }
+}
