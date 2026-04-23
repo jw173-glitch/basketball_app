@@ -1,0 +1,21 @@
+# Python 运行缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 本地数据库 (包含你的测试数据)
+db.sqlite3
+
+# AI 辅助工具及编辑器配置
+.claude/
+.vscode/
+.idea/
+
+# 视频和媒体文件 (通常太大，不建议传 GitHub)
+media/
+*.mp4
+*.mov
+
+# 虚拟环境
+venv/
+env/
