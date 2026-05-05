@@ -24,7 +24,7 @@ from core.consistency_scorer import JOINT_WEIGHTS, ConsistencyScorer
 from core.pose_extractor import PoseExtractor, ShotSequence
 from core.shot_detector import ShotDetector
 from core.shot_featurizer import featurize
-from core.shot_trainer import ShotModelFitter
+from core.shot_trainer import AdaptiveModelFitter, ModelVersionError, ShotModelFitter
 from utils.visualizer import (
     JOINT_LABELS,
     fig_to_bytes,
@@ -36,7 +36,7 @@ from utils.visualizer import (
 
 from .forms import ScoreShotForm, TrainingSampleForm
 from .models import AnalysisSession, PersonalModel, PlayerTemplate, TrainingSample
-from .services import serialize_sequence, start_training_thread
+from .services import auto_train_if_ready, serialize_sequence, start_training_thread
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -125,15 +125,12 @@ def logout_view(request):
 def home(request):
     recent_sessions = AnalysisSession.objects.filter(user=request.user)[:5]
     personal_model = _get_or_create_personal_model(request.user)
-    sample_counts = {
-        'total':  TrainingSample.objects.filter(user=request.user).count(),
-        'made':   TrainingSample.objects.filter(user=request.user, label=1).count(),
-        'missed': TrainingSample.objects.filter(user=request.user, label=0).count(),
-    }
+    n_made = TrainingSample.objects.filter(user=request.user, label=1).count()
     return render(request, 'shot_analyzer/home.html', {
         'recent_sessions': recent_sessions,
-        'personal_model': personal_model,
-        'sample_counts': sample_counts,
+        'personal_model':  personal_model,
+        'n_made':          n_made,
+        'scoring_stage':   AdaptiveModelFitter.stage_for(n_made),
     })
 
 
@@ -506,7 +503,7 @@ def training(request):
                         TrainingSample.objects.create(
                             user=request.user,
                             video_name=request.FILES['video'].name,
-                            label=int(form.cleaned_data['label']),
+                            label=1,  # made shots only
                             features_json=json.dumps(features.tolist()),
                             sequence_json=serialize_sequence(seq),
                         )
@@ -516,7 +513,16 @@ def training(request):
                         personal_model.n_made    = n_made
                         personal_model.n_missed  = n_missed
                         personal_model.save(update_fields=['n_samples', 'n_made', 'n_missed'])
-                        messages.success(request, f'Sample added! Total: {n_made + n_missed} ({n_made} made, {n_missed} missed)')
+
+                        stage = AdaptiveModelFitter.stage_for(n_made)
+                        stage_desc = {1: 'DTW (1–9 shots)', 2: 'OneClass ML (10–19)', 3: 'OneClass ML (20+)'}
+                        auto_train_if_ready(request.user.id, personal_model)
+                        messages.success(
+                            request,
+                            f'Shot added ({n_made} made). '
+                            f'Current stage: {stage_desc.get(stage, "")}. '
+                            f'Auto-training started.'
+                        )
                 finally:
                     try:
                         os.unlink(video_path)
@@ -547,9 +553,27 @@ def training(request):
         'personal_model': personal_model,
         'samples': samples,
         'form': TrainingSampleForm(),
-        'can_train': personal_model.n_made >= 3 and personal_model.n_missed >= 3,
+        'can_train': personal_model.n_made >= 1,
+        'scoring_stage': AdaptiveModelFitter.stage_for(personal_model.n_made),
         'joint_labels': JOINT_LABELS,
     })
+
+
+@login_required
+def delete_sample(request, sample_id):
+    """Delete a single training sample belonging to the current user."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+    sample = get_object_or_404(TrainingSample, id=sample_id, user=request.user)
+    sample.delete()
+    personal_model = _get_or_create_personal_model(request.user)
+    n_made   = TrainingSample.objects.filter(user=request.user, label=1).count()
+    n_missed = TrainingSample.objects.filter(user=request.user, label=0).count()
+    personal_model.n_samples = n_made + n_missed
+    personal_model.n_made    = n_made
+    personal_model.n_missed  = n_missed
+    personal_model.save(update_fields=['n_samples', 'n_made', 'n_missed'])
+    return redirect('training')
 
 
 @login_required
@@ -588,7 +612,7 @@ def consistency_check(request):
 
         ref_seq = _deserialize_template_sequence(personal_model.reference_sequence_json)
 
-        scorer = ConsistencyScorer(dtw_scale=0.10)
+        scorer = ConsistencyScorer(dtw_scale=0.30)
         report = scorer.compare(ref_seq, user_seq)
 
         return JsonResponse({
@@ -617,10 +641,13 @@ def consistency_check(request):
 @login_required
 def score(request):
     personal_model = _get_or_create_personal_model(request.user)
+    n_made = personal_model.n_made
+    stage  = AdaptiveModelFitter.stage_for(n_made)
 
-    if not personal_model.is_trained:
+    # No made shots at all — nothing to score against
+    if n_made == 0:
         return render(request, 'shot_analyzer/score.html', {
-            'not_trained': True,
+            'no_data': True,
             'personal_model': personal_model,
         })
 
@@ -634,18 +661,75 @@ def score(request):
                 if len(seq.frames) < 5:
                     messages.error(request, 'Not enough pose frames detected.')
                     return render(request, 'shot_analyzer/score.html', {
-                        'form': form, 'personal_model': personal_model,
+                        'form': form, 'personal_model': personal_model, 'stage': stage,
                     })
 
-                features = featurize(seq)
-                fitter = ShotModelFitter()
-                prediction = fitter.predict(bytes(personal_model.model_data), features)
+                prediction = None
+                ref_seq    = None
+                report     = None
+
+                # ── Always run DTW for per-joint charts ───────────────────
+                if personal_model.reference_sequence_json:
+                    ref_seq = _deserialize_template_sequence(
+                        personal_model.reference_sequence_json
+                    )
+                    report = ConsistencyScorer(dtw_scale=0.30).compare(ref_seq, seq)
+
+                # ── Primary score ─────────────────────────────────────────
+                if stage == 1:
+                    if report is None:
+                        messages.error(request, 'Reference not ready yet — training in progress.')
+                        return redirect('score')
+                    prediction = {
+                        'score':  report.overall_score,
+                        'method': 'dtw',
+                        'stage':  1,
+                        'grade':  report.grade,
+                    }
+                else:
+                    if not personal_model.model_data:
+                        messages.error(request, 'Model not ready yet — training in progress.')
+                        return redirect('score')
+                    features = featurize(seq)
+                    try:
+                        prediction = AdaptiveModelFitter().predict(
+                            bytes(personal_model.model_data), features
+                        )
+                    except ModelVersionError:
+                        messages.error(
+                            request,
+                            'Model feature set changed. Please clear samples and retrain.'
+                        )
+                        return redirect('training')
+
+                # ── Generate charts from DTW report ──────────────────────
+                charts = {}
+                joint_scores_data = []
+                if report is not None:
+                    charts['radar']  = _fig_to_base64(plot_radar(report))
+                    charts['bars']   = _fig_to_base64(plot_joint_bars(report))
+                    charts['curves'] = _fig_to_base64(plot_angle_curves(ref_seq, seq))
+                    joint_scores_data = [
+                        {
+                            'label':       JOINT_LABELS.get(js.joint, js.joint),
+                            'score':       round(js.score, 1),
+                            'dtw_distance': round(js.dtw_distance, 4),
+                            'weight':      round(js.weight * 100, 1),
+                            'is_worst':    js.is_most_inconsistent,
+                        }
+                        for js in report.joint_scores if js.weight > 0
+                    ]
 
                 return render(request, 'shot_analyzer/score.html', {
-                    'form': form,
+                    'form':           form,
                     'personal_model': personal_model,
-                    'prediction': prediction,
-                    'video_name': request.FILES['video'].name,
+                    'prediction':     prediction,
+                    'video_name':     request.FILES['video'].name,
+                    'stage':          stage,
+                    'charts':         charts,
+                    'joint_scores':   joint_scores_data,
+                    'feedback':       report.feedback if report else [],
+                    'dtw_secondary':  stage > 1 and bool(charts),
                 })
             finally:
                 try:
@@ -656,6 +740,7 @@ def score(request):
         form = ScoreShotForm()
 
     return render(request, 'shot_analyzer/score.html', {
-        'form': form,
+        'form':           form,
         'personal_model': personal_model,
+        'stage':          stage,
     })

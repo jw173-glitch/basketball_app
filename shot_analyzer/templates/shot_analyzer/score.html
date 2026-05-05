@@ -3,29 +3,49 @@
 
 {% block content %}
 <h1 class="mb-1">Shot Quality</h1>
-<p class="text-muted mb-4">Upload a shot video and see how closely your mechanics match your own successful shots.</p>
+<p class="text-muted mb-4">Upload a shot and see how closely your mechanics match your own made-shot patterns.</p>
 
-{% if not_trained %}
+{% if no_data %}
   <div class="card text-center py-5">
     <div class="card-body">
-      <div class="display-4 mb-3">🧠</div>
-      <h4>No Trained Model Yet</h4>
-      <p class="text-muted">You need to train a personal model first.</p>
+      <div class="display-4 mb-3">🏀</div>
+      <h4>No Made Shots Yet</h4>
+      <p class="text-muted">Upload at least one made shot to start scoring.</p>
       <a href="{% url 'training' %}" class="btn btn-primary">Go to Training →</a>
     </div>
   </div>
+
 {% else %}
 
-  {% if personal_model.is_trained %}
-  <div class="alert alert-success mb-4">
-    ✅ Model trained on <strong>{{ personal_model.n_samples }}</strong> samples
-    ({{ personal_model.n_made }} made / {{ personal_model.n_missed }} missed) &nbsp;·&nbsp;
-    Model type: <strong>{{ personal_model.model_type }}</strong>
+  <!-- Stage badge -->
+  <div class="alert mb-4" style="background:#1a1a1a; border:1px solid #333; color:#ccc;">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+      <div>
+        <span class="badge bg-primary me-1">Stage {{ stage }}</span>
+        {% if stage == 1 %}
+          Scoring via <strong>DTW consistency</strong> — comparing motion shape to your {{ personal_model.n_made }} made shots
+          &nbsp;·&nbsp; <span class="text-muted small">{{ personal_model.n_made }}/10 shots until Stage 2</span>
+        {% elif stage == 2 %}
+          Scoring via <strong>OneClass SVM</strong> (augmented dataset)
+          &nbsp;·&nbsp; <span class="text-muted small">{{ personal_model.n_made }}/20 shots until Stage 3</span>
+        {% else %}
+          Scoring via <strong>OneClass SVM</strong> ({{ personal_model.n_made }} real made shots)
+        {% endif %}
+      </div>
+      <div class="ms-auto">
+        {% if personal_model.training_status == 'running' %}
+          <span class="text-warning small">⏳ Retraining…</span>
+        {% elif personal_model.training_status == 'complete' %}
+          <span class="text-success small">✅ Model up to date</span>
+        {% endif %}
+      </div>
+    </div>
   </div>
-  {% endif %}
 
   <div class="row g-4">
-    <div class="col-md-5">
+
+    <!-- Upload form -->
+    <div class="col-md-4">
       <div class="card">
         <div class="card-header"><h6 class="mb-0">📹 Upload Shot</h6></div>
         <div class="card-body">
@@ -38,53 +58,171 @@
             <button type="submit" class="btn btn-primary w-100" id="scoreBtn">
               🎯 Analyze Shot
             </button>
-            <div class="form-text mt-2">Processing takes ~15-30 sec.</div>
+            <div class="form-text mt-2">Processing takes ~15–30 sec.</div>
           </form>
         </div>
       </div>
     </div>
 
+    <!-- Primary score card -->
     {% if prediction %}
-    <div class="col-md-7">
+    <div class="col-md-8">
       <div class="card text-center">
-        <div class="card-header"><h6 class="mb-0">Result — {{ video_name }}</h6></div>
+        <div class="card-header">
+          <h6 class="mb-0">
+            Result — {{ video_name }}
+            <span class="badge bg-secondary ms-2" style="font-size:.7rem;">
+              {% if prediction.method == 'dtw' %}DTW{% else %}SVM{% endif %}
+            </span>
+          </h6>
+        </div>
         <div class="card-body py-4">
 
           <div class="display-1 fw-bold mb-2
-            {% if prediction.score >= 75 %}score-color-a
-            {% elif prediction.score >= 55 %}score-color-b
-            {% elif prediction.score >= 35 %}score-color-c
+            {% if prediction.score >= 80 %}score-color-a
+            {% elif prediction.score >= 65 %}score-color-b
+            {% elif prediction.score >= 45 %}score-color-c
             {% else %}score-color-d{% endif %}">
             {{ prediction.score }}
           </div>
           <p class="text-muted mb-4">Form Quality Score (out of 100)</p>
 
-          <div class="row g-3 justify-content-center mb-4">
-            <div class="col-5">
-              <div class="stat-box">
-                <div class="stat-value" style="color:#2ECC71;">{{ prediction.made_prob }}%</div>
-                <div class="stat-label">Matches your made-shot form</div>
+          {% if prediction.method == 'dtw' %}
+            <div class="row g-3 justify-content-center mb-3">
+              <div class="col-5">
+                <div class="stat-box">
+                  <div class="stat-value" style="color:#4A90D9;">{{ prediction.grade }}</div>
+                  <div class="stat-label">Consistency Grade</div>
+                </div>
+              </div>
+              <div class="col-5">
+                <div class="stat-box">
+                  <div class="stat-value" style="color:#aaa;">{{ personal_model.n_made }}</div>
+                  <div class="stat-label">Shots in template</div>
+                </div>
               </div>
             </div>
-            <div class="col-5">
-              <div class="stat-box">
-                <div class="stat-value" style="color:#E74C3C;">{{ prediction.missed_prob }}%</div>
-                <div class="stat-label">Matches your missed-shot form</div>
+          {% else %}
+            <div class="row g-3 justify-content-center mb-3">
+              <div class="col-5">
+                <div class="stat-box">
+                  <div class="stat-value" style="color:#2ECC71;">
+                    {% if prediction.score >= 80 %}Above avg{% elif prediction.score >= 65 %}On par{% else %}Below avg{% endif %}
+                  </div>
+                  <div class="stat-label">vs your made-shot average</div>
+                </div>
+              </div>
+              <div class="col-5">
+                <div class="stat-box">
+                  <div class="stat-value" style="color:#aaa;">{{ personal_model.n_made }}</div>
+                  <div class="stat-label">Made shots trained on</div>
+                </div>
               </div>
             </div>
-          </div>
+            <p class="text-muted small mb-0">
+              75 = your typical made-shot quality. Scores above 75 mean this shot
+              is more consistent with your best form.
+            </p>
+          {% endif %}
 
-          <p class="text-muted small">
-            This score reflects how closely your mechanics match your own historical
-            <strong>made-shot patterns</strong> — not a prediction of whether this
-            specific shot went in.
-          </p>
         </div>
       </div>
     </div>
     {% endif %}
 
   </div>
+
+  {% if prediction and charts %}
+
+    {% if dtw_secondary %}
+    <div class="alert mt-4 mb-2" style="background:#1a2a1a; border:1px solid #2a5a2a; color:#aaa; font-size:.85rem;">
+      📊 Joint analysis below is based on DTW comparison against your personal reference template
+      (separate from the SVM score above).
+    </div>
+    {% endif %}
+
+    <!-- Radar + Bars -->
+    <div class="row g-4 mt-1">
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0">Joint Consistency Radar</h6></div>
+          <div class="card-body text-center p-2">
+            <img src="data:image/png;base64,{{ charts.radar }}" class="img-fluid" style="max-height:340px;">
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0">Joint Scores</h6></div>
+          <div class="card-body text-center p-2">
+            <img src="data:image/png;base64,{{ charts.bars }}" class="img-fluid" style="max-height:340px;">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Angle curves -->
+    <div class="card mt-4">
+      <div class="card-header"><h6 class="mb-0">📈 Joint Angle Comparison (your shot vs personal template)</h6></div>
+      <div class="card-body text-center p-2">
+        <img src="data:image/png;base64,{{ charts.curves }}" class="img-fluid">
+      </div>
+    </div>
+
+    <!-- Joint score table -->
+    {% if joint_scores %}
+    <div class="card mt-4">
+      <div class="card-header"><h6 class="mb-0">📋 Per-Joint Detail</h6></div>
+      <div class="card-body p-0">
+        <table class="table table-dark table-hover mb-0">
+          <thead>
+            <tr>
+              <th>Joint</th>
+              <th>Score</th>
+              <th>DTW Distance</th>
+              <th>Weight</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for js in joint_scores %}
+            <tr {% if js.is_worst %}style="background-color:#2a1a1a;"{% endif %}>
+              <td>{{ js.label }}</td>
+              <td class="fw-bold score-color-{% if js.score >= 85 %}a{% elif js.score >= 70 %}b{% elif js.score >= 55 %}c{% else %}d{% endif %}">
+                {{ js.score }}
+              </td>
+              <td class="text-muted">{{ js.dtw_distance }}</td>
+              <td class="text-muted">{{ js.weight }}%</td>
+              <td>
+                {% if js.is_worst %}
+                  <span class="badge bg-danger">⚠️ Worst</span>
+                {% elif js.score >= 75 %}
+                  <span class="badge bg-success">✅ Good</span>
+                {% else %}
+                  <span class="badge bg-warning text-dark">📌 Watch</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+  {% endif %}
+
+  <!-- Text feedback -->
+  {% if feedback %}
+  <div class="card mt-4">
+    <div class="card-header"><h6 class="mb-0">📝 Feedback</h6></div>
+    <div class="card-body">
+      {% for line in feedback %}
+        <p class="mb-2" style="color:#ccc;">{{ line }}</p>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
 {% endif %}
 {% endblock %}

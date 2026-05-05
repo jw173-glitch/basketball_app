@@ -31,9 +31,12 @@ except ImportError:
 @dataclass
 class FrameData:
     frame_idx: int
-    landmarks: Dict[str, Tuple[float, float, float]]   # name → (x, y, z)
-    angles: Dict[str, float]                            # joint_name → degrees
-    image: Optional[np.ndarray] = None                 # annotated frame (BGR)
+    landmarks: Dict[str, Tuple[float, float, float]]        # name → (x, y, z) normalized image coords
+    angles: Dict[str, float]                                # joint_name → degrees
+    image: Optional[np.ndarray] = None                      # annotated frame (BGR)
+    world_landmarks: Dict[str, Tuple[float, float, float]] = field(default_factory=dict)
+    # world_landmarks: real-world coords in metres, origin = hip centre.
+    # Y axis points downward, so height_above_hip = -world_y.
 
 
 @dataclass
@@ -162,12 +165,22 @@ class PoseExtractor:
 
         lms = result.pose_landmarks.landmark
 
-        # Joint coordinates
+        # Joint coordinates (normalized image coords)
         landmarks = {
             LANDMARK_NAMES[i]: (lm.x, lm.y, lm.z)
             for i, lm in enumerate(lms)
             if i < len(LANDMARK_NAMES)
         }
+
+        # World coordinates (metres, origin = hip centre, Y points down)
+        world_landmarks: Dict[str, Tuple[float, float, float]] = {}
+        if result.pose_world_landmarks:
+            wlms = result.pose_world_landmarks.landmark
+            world_landmarks = {
+                LANDMARK_NAMES[i]: (lm.x, lm.y, lm.z)
+                for i, lm in enumerate(wlms)
+                if i < len(LANDMARK_NAMES)
+            }
 
         # Joint angles (integer indices, compatible with all versions)
         angles = {}
@@ -195,4 +208,10 @@ class PoseExtractor:
             except Exception:
                 pass  # annotation failure does not affect data extraction
 
-        return FrameData(frame_idx=idx, landmarks=landmarks, angles=angles, image=annotated)
+        return FrameData(
+            frame_idx=idx,
+            landmarks=landmarks,
+            angles=angles,
+            image=annotated,
+            world_landmarks=world_landmarks,
+        )
