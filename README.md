@@ -63,10 +63,13 @@ basketball_app/
 │       ├── score.html
 │       └── history.html
 ├── core/
-│   ├── pose_extractor.py               # MediaPipe pose extraction
+│   ├── pose_extractor.py               # MediaPipe pose extraction (+ world landmarks)
 │   ├── consistency_scorer.py           # DTW consistency scoring
-│   ├── shot_featurizer.py              # ShotSequence → 58-dim feature vector
-│   └── shot_trainer.py                 # SVC / LogisticRegression fitting & prediction
+│   ├── shot_featurizer.py              # ShotSequence → 93-dim feature vector (phase-aware)
+│   ├── shot_trainer.py                 # AdaptiveModelFitter (OneClassSVM) + legacy ShotModelFitter
+│   ├── shot_augmenter.py               # Jitter + time-warp augmentation for small datasets
+│   ├── shot_detector.py                # Auto-detect shot segments in a long video
+│   └── shot_phase_detector.py          # Key-frame detection within one shot (P1/P2/P4/P7)
 └── utils/
     └── visualizer.py                   # Radar chart, angle curves, bar chart, score card
 ```
@@ -90,26 +93,151 @@ basketball_app/
 
 | Module | Class / Function | Description |
 |--------|-----------------|-------------|
-| `pose_extractor.py` | `PoseExtractor` | Extracts 33 keypoint coordinates + 8 joint angles per frame via MediaPipe |
+| `pose_extractor.py` | `PoseExtractor` | Extracts 33 keypoint coordinates (image + world) + 8 joint angles per frame via MediaPipe |
 | `consistency_scorer.py` | `ConsistencyScorer` | DTW comparison → per-joint scores → weighted total → feedback |
-| `shot_featurizer.py` | `featurize()` | Converts a `ShotSequence` into a 58-dimensional feature vector |
-| `shot_trainer.py` | `ShotModelFitter` | Fits SVC or LogisticRegression; selects model based on sample count |
+| `shot_featurizer.py` | `featurize()` | Converts a `ShotSequence` into a 93-dimensional feature vector (global stats + phase-aware features) |
+| `shot_trainer.py` | `AdaptiveModelFitter` | One-class SVM on made shots only; stage-aware scoring formula |
+| `shot_augmenter.py` | `augment_sequence()` | Jitter + time-warp augmentation to grow small made-shot datasets |
+| `shot_detector.py` | `ShotDetector` | Detects and segments individual shooting motions from a long video using knee-angle valleys |
+| `shot_phase_detector.py` | `ShotPhaseDetector` | Locates key frames (P1/P2/P4/P7) within one shot using MediaPipe world landmarks |
 | `visualizer.py` | — | Angle curves, radar chart, bar chart, score card (matplotlib → base64 PNG) |
+
+---
+
+## Shot Phase Detection
+
+`ShotPhaseDetector` finds four key frames within a single shooting motion, mirroring the wrist-height curve:
+
+```
+height
+ |        P4 top (release)
+ |       /
+ |      /
+ |  P2 /
+ |   |/
+ |  P1        P7 follow-through end
+ |             \____
+ +-------------------> time
+```
+
+| Phase | Name | Detection method |
+|-------|------|-----------------|
+| P1 | `P1_address` | Fixed offset before P2 (ready stance) |
+| P2 | `P2_load` | Wrist lowest point before release (loading dip) |
+| P4 | `P4_top` | Wrist at highest point = release |
+| P7 | `P7_followthrough` | First valley after release (follow-through end) |
+
+**Height signal (priority order)**
+
+1. **MediaPipe world landmarks** (`pose_world_landmarks`) — coordinates estimated in metres with origin at the hip centre. Height = `−world_y`. More stable than image coordinates because MediaPipe compensates for body-proportion scale, but the estimate is still derived from a single monocular camera so it is not perfectly distance-independent — it degrades when the shooting angle or distance changes significantly between recordings.
+2. **Inverted image landmarks** — `1.0 − landmark_y` (normalised 0–1). Used as fallback when world landmarks are unavailable (e.g. sequences loaded from stored JSON).
+
+### Usage
+
+```python
+from core.shot_phase_detector import ShotPhaseDetector
+
+detector = ShotPhaseDetector()
+
+# Option A — from a pre-extracted ShotSequence
+kf = detector.detect(seq)
+
+# Option B — directly from a video file (runs MediaPipe internally)
+kf = detector.detect_from_video("shot.mp4", start_frame=120, end_frame=420)
+
+# Frame index → timestamp is automatic: timestamp = frame_idx / fps
+print(kf.as_table())
+# Phase                  Frame  Time (s)
+# --------------------------------------
+# P1_address                 6     0.200
+# P2_load                   18     0.600
+# P4_top                    41     1.367
+# P7_followthrough          59     1.967
+
+# Save a JPEG screenshot for each phase
+saved = detector.save_screenshots(
+    "shot.mp4", kf,
+    output_dir="./phases/",
+    segment_start_frame=120,   # absolute frame offset in the source video
+)
+# → ./phases/P1_address.jpg
+# → ./phases/P2_load.jpg
+# → ./phases/P4_top.jpg
+# → ./phases/P7_followthrough.jpg
+```
 
 ---
 
 ## ML Model Details
 
-| Samples | Model Used | Reason |
-|---------|-----------|--------|
-| ≥ 15 | SVC (RBF kernel) | Better generalization for higher-dimensional data |
-| < 15 | Logistic Regression (L2, C=0.1) | Fewer parameters, less overfitting risk |
+### Adaptive scoring (made shots only)
 
-Evaluation uses leave-one-out cross-validation. Score = `P(made) × 100`.
+The system requires **only made shots** — no missed-shot labeling needed. It automatically switches strategy as your dataset grows, and re-trains after every new upload.
 
-Feature vector (58 dimensions): for each of 8 joints — mean, std, min, max, range, 25th-percentile angle, 75th-percentile angle — plus normalized frame count and shot duration.
+| Stage | Made shots | Method | Auto-trigger |
+|-------|-----------|--------|-------------|
+| 1 | 1 – 9 | DTW against averaged personal template | ✓ after each upload |
+| 2 | 10 – 19 | OneClassSVM on augmented data (~60 samples) | ✓ after each upload |
+| 3 | 20 + | OneClassSVM on real data only | ✓ after each upload |
 
-Minimum training requirement: **3 made + 3 missed shots**.
+### Scoring formulas
+
+**Stage 1 — DTW consistency**
+
+```
+score = 100 × e^(−d / 0.10)
+```
+
+`d` is the path-normalised DTW distance between the new shot and the personal reference template (average of all made shots). Both series are Z-score normalised before comparison, so absolute angle offsets from camera position are ignored — only motion shape matters.
+
+| DTW distance | Score |
+|-------------|-------|
+| 0.00 | 100 |
+| 0.03 | ~74 |
+| 0.07 | ~50 |
+
+**Stage 2 / 3 — OneClassSVM**
+
+```
+z     = (decision_score − real_train_mean) / real_train_std
+score = 100 / (1 + e^(−(z + 1.1)))
+```
+
+`real_train_mean` and `real_train_std` are computed on the user's **real** made shots only (not on synthetic augmented samples), so `z = 0` always corresponds to the user's true average made shot.
+
+| z | Score | Meaning |
+|---|-------|---------|
+| +2 | ~95 | Well above your average |
+| 0 | **75** | Your typical made shot |
+| −1 | ~52 | Slightly below average |
+| −2 | ~29 | Clear outlier |
+
+The sigmoid shift (+1.1) aligns stage 2/3 with stage 1: both give ~70–80 for a shot that matches the user's normal made-shot form, so the score does not jump when crossing the 10-shot threshold.
+
+### Data augmentation (stage 2)
+
+When made shots are between 10 and 19, each real sequence is augmented to reach ~60 training samples:
+
+- **Time warp** — resample to ±15% of original length (models pacing variation)
+- **Angle jitter** — add Gaussian noise ±3° to every joint angle (models frame-to-frame variation)
+
+The model trains on real + augmented combined, but score calibration uses only the real shots.
+
+### Feature Vector (93 dimensions)
+
+| Group | Dims | Content |
+|-------|------|---------|
+| A — Global statistics | 58 | 8 joints × 7 stats (mean, std, min, max, range, p25, p75) + frame count + duration |
+| B — Phase angles | 16 | Joint angle at each of P1/P2/P4/P7 for 4 key joints (right elbow, shoulder, knee, hip) |
+| C — Phase deltas | 8 | (P4 − P2) and (P7 − P4) angle change per key joint — captures load-to-release drive |
+| D — Release quality | 3 | Wrist height at release (P4), load timing fraction, release timing fraction |
+| E — Angular velocity | 8 | Mean and peak angular speed (deg/frame) for 4 key joints |
+
+Groups B–E restore temporal structure that group A loses: two sequences with the same mean/std but opposite motion order produce identical group-A features, but different group-B/C features.
+
+### Model versioning
+
+The model bundle stores the feature dimension it was trained on. If `featurize()` is upgraded and produces a different vector size, `predict()` raises `ModelVersionError` instead of silently producing wrong results. The score page will prompt you to clear samples and retrain.
 
 ---
 

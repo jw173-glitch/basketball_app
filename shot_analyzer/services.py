@@ -19,14 +19,15 @@ import numpy as np
 from django.db import close_old_connections
 from django.utils import timezone
 
-from core.shot_trainer import ShotModelFitter, InsufficientDataError
+from core.shot_trainer import (
+    AdaptiveModelFitter, InsufficientDataError,
+    ShotModelFitter,  # kept for legacy bundles
+)
+from core.shot_augmenter import augment_sequence, n_augments_for
 
 
 def start_training_thread(user_id: int) -> threading.Thread:
-    """Spawn a daemon thread that trains the user's personal model.
-
-    The thread updates PersonalModel.training_status as it progresses.
-    Returns the thread object (already started)."""
+    """Spawn a daemon thread that trains the user's personal model."""
     thread = threading.Thread(
         target=_training_worker,
         args=(user_id,),
@@ -35,6 +36,22 @@ def start_training_thread(user_id: int) -> threading.Thread:
     )
     thread.start()
     return thread
+
+
+def auto_train_if_ready(user_id: int, personal_model) -> bool:
+    """
+    Start a training thread if there is at least 1 made shot and training
+    is not already running.  Returns True if training was started.
+    """
+    if personal_model.training_status == 'running':
+        return False
+    if personal_model.n_made < 1:
+        return False
+    personal_model.training_status = 'running'
+    personal_model.training_message = 'Auto-training with latest samples…'
+    personal_model.save(update_fields=['training_status', 'training_message'])
+    start_training_thread(user_id)
+    return True
 
 
 def serialize_sequence(seq) -> str:
@@ -132,10 +149,16 @@ def compute_personal_reference(made_sequences: list, target_len: int = 100):
 
 
 def _training_worker(user_id: int) -> None:
-    """Background worker: load samples from DB, train ML model, then compute
-    and store a personal reference sequence from the user's made shots."""
+    """
+    Background worker — adaptive, made-shots-only pipeline.
+
+    Stage 1 (1–9 made):   compute personal reference only; no ML model.
+    Stage 2 (10–19 made): augment to ~60 samples, train OneClassSVM.
+    Stage 3 (20+ made):   train OneClassSVM on real data, no augmentation.
+    """
     close_old_connections()
 
+    from core.shot_featurizer import featurize, FEATURE_DIM
     from .models import PersonalModel, TrainingSample
 
     def update_status(status: str, message: str, **kwargs):
@@ -146,41 +169,96 @@ def _training_worker(user_id: int) -> None:
         )
 
     try:
-        update_status('running', 'Loading training samples...')
+        # ── Load made shots only ──────────────────────────────────────────────
+        update_status('running', 'Loading made shots…')
+        made_samples = list(
+            TrainingSample.objects.filter(user_id=user_id, label=1)
+        )
+        all_samples = list(TrainingSample.objects.filter(user_id=user_id))
 
-        samples = list(TrainingSample.objects.filter(user_id=user_id))
-        if not samples:
-            raise InsufficientDataError("No training samples found for this user.")
+        n_made   = len(made_samples)
+        n_missed = len(all_samples) - n_made
 
-        X = np.array([json.loads(s.features_json) for s in samples], dtype=np.float32)
-        y = np.array([s.label for s in samples], dtype=np.int32)
+        if n_made == 0:
+            raise InsufficientDataError("No made shots found. Upload at least one made shot.")
 
-        update_status('running', f'Fitting model on {len(X)} samples...')
+        stage = AdaptiveModelFitter.stage_for(n_made)
 
-        fitter = ShotModelFitter()
-        result = fitter.fit(X, y)
-        model_bytes = pickle.dumps({'model': result.model, 'scaler': result.scaler})
-
-        # Build personal reference from made-shot sequences
-        update_status('running', 'Computing personal reference sequence...')
-        made_samples = [s for s in samples if s.label == 1 and s.sequence_json]
+        # ── Always: personal reference (average of made shots) ────────────────
+        update_status('running', 'Building personal reference sequence…')
+        made_sequences = [
+            _deserialize_sequence(s.sequence_json)
+            for s in made_samples if s.sequence_json
+        ]
         ref_json = ''
-        if made_samples:
-            made_sequences = [_deserialize_sequence(s.sequence_json) for s in made_samples]
+        if made_sequences:
             reference_seq = compute_personal_reference(made_sequences)
             if reference_seq is not None:
                 ref_json = serialize_sequence(reference_seq)
 
+        # ── Stage 1: reference only, no ML ───────────────────────────────────
+        if stage == 1:
+            update_status(
+                'complete',
+                f'Stage 1 ({n_made} made shots): scoring via DTW consistency.',
+                model_data=None,
+                cv_accuracy=None,
+                model_type='DTW',
+                trained_at=timezone.now(),
+                n_samples=n_made,
+                n_made=n_made,
+                n_missed=n_missed,
+                reference_sequence_json=ref_json,
+            )
+            return
+
+        # ── Stage 2/3: build feature matrix, optionally augment ───────────────
+        update_status('running', f'Featurizing {n_made} made shots…')
+
+        raw_features = [json.loads(s.features_json) for s in made_samples]
+        dims = {len(f) for f in raw_features}
+        if len(dims) > 1:
+            raise ValueError(
+                f"Made-shot feature dimensions are mixed {dims}. "
+                "Please clear samples and re-add them."
+            )
+
+        X_real = np.array(raw_features, dtype=np.float32)
+
+        X_aug = None
+        if stage == 2:
+            n_aug = n_augments_for(n_made, target=60)
+            update_status('running',
+                          f'Augmenting {n_made} shots × {n_aug} → {n_made*(n_aug+1)} total…')
+            aug_seqs = []
+            for s in made_sequences:
+                aug_seqs.extend(augment_sequence(s, n=n_aug))
+            aug_rows = [featurize(s) for s in aug_seqs if len(s.frames) >= 5]
+            if aug_rows:
+                X_aug = np.array(aug_rows, dtype=np.float32)
+
+        # ── Train OneClassSVM ─────────────────────────────────────────────────
+        n_total = n_made + (len(X_aug) if X_aug is not None else 0)
+        update_status('running',
+                      f'Training OneClassSVM on {n_total} samples (stage {stage})…')
+        fitter = AdaptiveModelFitter()
+        # X_real and X_aug kept separate so calibration uses real shots only
+        result = fitter.fit(X_real, X_augmented=X_aug)
+        model_bytes = AdaptiveModelFitter.bundle(result, feature_dim=X_real.shape[1])
+
+        n_synthetic = n_total - n_made
         update_status(
             'complete',
-            f'Done. Cross-validation accuracy: {result.cv_accuracy:.0%}',
+            f'Stage {stage} — {n_made} real'
+            + (f' + {n_synthetic} synthetic' if n_synthetic > 0 else '')
+            + '. Model ready.',
             model_data=model_bytes,
-            cv_accuracy=result.cv_accuracy,
-            model_type=result.model_type,
+            cv_accuracy=None,
+            model_type=f'OneClassSVM-stage{stage}',
             trained_at=timezone.now(),
-            n_samples=len(X),
-            n_made=int((y == 1).sum()),
-            n_missed=int((y == 0).sum()),
+            n_samples=n_made,
+            n_made=n_made,
+            n_missed=n_missed,
             reference_sequence_json=ref_json,
         )
 

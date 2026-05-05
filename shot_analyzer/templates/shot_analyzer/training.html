@@ -3,32 +3,95 @@
 
 {% block content %}
 <h1 class="mb-1">Train My Model</h1>
-<p class="text-muted mb-4">Upload your own made/missed shots. Once you have enough samples, the app trains a personalized model that scores your form based on your own shooting patterns.</p>
+<p class="text-muted mb-4">Upload your <strong>made shots</strong> only. The system auto-trains after every upload and improves as your dataset grows.</p>
 
-<!-- Status banner -->
+<!-- Stage progress -->
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="row align-items-center g-3">
+
+      <!-- Stage badges -->
+      <div class="col-md-7">
+        <div class="d-flex align-items-center gap-3 flex-wrap">
+
+          <div class="text-center">
+            <span class="badge {% if scoring_stage == 1 %}bg-primary{% else %}bg-secondary{% endif %} mb-1 d-block" style="font-size:.75rem;">
+              Stage 1
+            </span>
+            <div class="small text-muted">1–9 shots</div>
+            <div class="small" style="color:#aaa;">DTW template</div>
+          </div>
+
+          <div class="text-muted">→</div>
+
+          <div class="text-center">
+            <span class="badge {% if scoring_stage == 2 %}bg-primary{% else %}bg-secondary{% endif %} mb-1 d-block" style="font-size:.75rem;">
+              Stage 2
+            </span>
+            <div class="small text-muted">10–19 shots</div>
+            <div class="small" style="color:#aaa;">SVM + augment</div>
+          </div>
+
+          <div class="text-muted">→</div>
+
+          <div class="text-center">
+            <span class="badge {% if scoring_stage == 3 %}bg-primary{% else %}bg-secondary{% endif %} mb-1 d-block" style="font-size:.75rem;">
+              Stage 3
+            </span>
+            <div class="small text-muted">20+ shots</div>
+            <div class="small" style="color:#aaa;">SVM real data</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress toward next stage -->
+      <div class="col-md-5">
+        {% if scoring_stage == 1 %}
+          <div class="small text-muted mb-1">{{ personal_model.n_made }} / 10 made shots → Stage 2</div>
+          <div class="progress" style="height:8px; background:#2a2a2a;">
+            <div class="progress-bar bg-primary" style="width:{{ personal_model.n_made|floatformat:0 }}0%"></div>
+          </div>
+          <div class="small text-muted mt-1">Current method: <strong>DTW consistency</strong></div>
+        {% elif scoring_stage == 2 %}
+          <div class="small text-muted mb-1">{{ personal_model.n_made }} / 20 made shots → Stage 3</div>
+          <div class="progress" style="height:8px; background:#2a2a2a;">
+            <div class="progress-bar bg-primary" style="width:{% widthratio personal_model.n_made 20 100 %}%"></div>
+          </div>
+          <div class="small text-muted mt-1">Current method: <strong>OneClass SVM (augmented)</strong></div>
+        {% else %}
+          <div class="small text-success mb-1">✅ {{ personal_model.n_made }} made shots — full model</div>
+          <div class="progress" style="height:8px; background:#2a2a2a;">
+            <div class="progress-bar bg-success" style="width:100%"></div>
+          </div>
+          <div class="small text-muted mt-1">Current method: <strong>OneClass SVM</strong></div>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Training status banner -->
 <div class="card mb-4" id="statusCard">
   <div class="card-body">
     <div class="row align-items-center">
-      <div class="col-md-8">
+      <div class="col-md-9">
         <h6 class="mb-1">Training Status</h6>
         {% if personal_model.training_status == 'complete' %}
-          <p class="mb-0 text-success">✅ Model ready — {{ personal_model.training_message }}</p>
+          <p class="mb-0 text-success">✅ {{ personal_model.training_message }}</p>
           {% if personal_model.trained_at %}
-            <small class="text-muted">Trained {{ personal_model.trained_at|date:"M d, Y H:i" }}</small>
+            <small class="text-muted">Updated {{ personal_model.trained_at|date:"M d, Y H:i" }}</small>
           {% endif %}
         {% elif personal_model.training_status == 'running' %}
           <p class="mb-0 text-warning" id="statusMsg">⏳ {{ personal_model.training_message }}</p>
         {% elif personal_model.training_status == 'error' %}
           <p class="mb-0 text-danger">❌ {{ personal_model.training_message }}</p>
         {% else %}
-          <p class="mb-0 text-muted">No model trained yet.</p>
+          <p class="mb-0 text-muted">Upload your first made shot to begin.</p>
         {% endif %}
       </div>
-      <div class="col-md-4 text-md-end mt-2 mt-md-0">
-        <span class="me-3 text-muted small">
-          {{ personal_model.n_made }} made &nbsp;/&nbsp; {{ personal_model.n_missed }} missed
-          &nbsp;/&nbsp; {{ personal_model.n_samples }} total
-        </span>
+      <div class="col-md-3 text-md-end mt-2 mt-md-0">
+        <span class="text-muted small">{{ personal_model.n_made }} made shots</span>
       </div>
     </div>
   </div>
@@ -39,58 +102,45 @@
   <!-- Add sample -->
   <div class="col-lg-5">
     <div class="card">
-      <div class="card-header"><h6 class="mb-0">➕ Add Training Sample</h6></div>
+      <div class="card-header"><h6 class="mb-0">➕ Add Made Shot</h6></div>
       <div class="card-body">
         <form method="post" enctype="multipart/form-data" id="addSampleForm">
           {% csrf_token %}
           <input type="hidden" name="action" value="add_sample">
+          <input type="hidden" name="label" value="1">
 
           <div class="mb-3">
-            <label class="form-label">Shot Video</label>
+            <label class="form-label">Shot Video (made shot only)</label>
             <input type="file" name="video" class="form-control" accept="video/*" required>
           </div>
 
-          <div class="mb-3">
-            <label class="form-label d-block">Outcome</label>
-            <div class="form-check form-check-inline">
-              <input class="form-check-input" type="radio" name="label" id="labelMade" value="1" checked>
-              <label class="form-check-label text-success" for="labelMade">Made ✅</label>
-            </div>
-            <div class="form-check form-check-inline">
-              <input class="form-check-input" type="radio" name="label" id="labelMissed" value="0">
-              <label class="form-check-label text-danger" for="labelMissed">Missed ❌</label>
-            </div>
-          </div>
-
           <button type="submit" class="btn btn-primary w-100" id="addBtn">
-            Add Sample
+            Add Made Shot
           </button>
-          <div class="form-text mt-2">Processing extracts joint angles — takes ~15-30 sec per video.</div>
+          <div class="form-text mt-2">
+            Auto-trains after upload. Processing takes ~15–30 sec.
+          </div>
         </form>
       </div>
     </div>
 
-    <!-- Train button -->
+    <!-- Manual retrain -->
     <div class="card mt-3">
       <div class="card-body">
-        <h6>🧠 Start Training</h6>
+        <h6>🔄 Force Retrain</h6>
+        <p class="text-muted small">Training runs automatically after each upload. Use this to manually trigger a retrain if needed.</p>
         {% if can_train %}
-          <p class="text-muted small">You have enough samples. Click below to train your model.</p>
           <form method="post" id="trainForm">
             {% csrf_token %}
             <input type="hidden" name="action" value="start_training">
-            <button type="submit" class="btn btn-primary w-100"
+            <button type="submit" class="btn btn-outline-primary w-100"
                     {% if personal_model.training_status == 'running' %}disabled{% endif %}
                     id="trainBtn">
-              {% if personal_model.training_status == 'running' %}Training...{% else %}Train My Model{% endif %}
+              {% if personal_model.training_status == 'running' %}Training…{% else %}Retrain Now{% endif %}
             </button>
           </form>
         {% else %}
-          <p class="text-muted small">
-            Need at least <strong>3 made</strong> and <strong>3 missed</strong> shots.<br>
-            Currently: {{ personal_model.n_made }} made, {{ personal_model.n_missed }} missed.
-          </p>
-          <button class="btn btn-primary w-100" disabled>Not Enough Samples</button>
+          <button class="btn btn-outline-secondary w-100" disabled>Upload a made shot first</button>
         {% endif %}
       </div>
     </div>
@@ -100,7 +150,7 @@
     <div class="card mt-3">
       <div class="card-body">
         <h6 class="text-danger">⚠️ Clear All Samples</h6>
-        <p class="text-muted small">This removes all training samples. The trained model is kept.</p>
+        <p class="text-muted small">Removes all training samples. The model and reference template are kept until you retrain.</p>
         <form method="post" onsubmit="return confirm('Delete all training samples?')">
           {% csrf_token %}
           <input type="hidden" name="action" value="clear_samples">
@@ -111,62 +161,12 @@
     {% endif %}
   </div>
 
-  <!-- Consistency check (only shown when reference sequence exists) -->
-  {% if personal_model.reference_sequence_json %}
-  <div class="col-lg-7">
-    <div class="card mb-4">
-      <div class="card-header"><h6 class="mb-0">📐 Check Shot Consistency</h6></div>
-      <div class="card-body">
-        <p class="text-muted small mb-3">
-          Upload a new shot and compare it against your personal reference
-          (averaged from your <strong>{{ personal_model.n_made }} made shots</strong>).
-          No reference video needed.
-        </p>
-        <input type="file" id="consistencyVideoInput" class="form-control mb-3" accept="video/*">
-        <button class="btn btn-primary w-100" onclick="runConsistencyCheck()">
-          Check Consistency
-        </button>
-
-        <!-- Loading -->
-        <div id="consistencyLoading" class="text-center py-3" style="display:none;">
-          <div class="loading-spinner mx-auto mb-2"></div>
-          <p class="text-muted small">Extracting pose and comparing…</p>
-        </div>
-
-        <!-- Error -->
-        <div id="consistencyError" class="alert alert-error mt-3" style="display:none;"></div>
-
-        <!-- Result -->
-        <div id="consistencyResult" style="display:none;" class="mt-3">
-          <hr style="border-color:#333;">
-          <div class="row g-2 text-center mb-3">
-            <div class="col-4">
-              <div class="stat-box">
-                <div class="stat-label">Consistency</div>
-                <div class="stat-value" id="cScore" style="font-size:2rem;">—</div>
-              </div>
-            </div>
-            <div class="col-4">
-              <div class="stat-box">
-                <div class="stat-label">Grade</div>
-                <div class="stat-value" id="cGrade" style="font-size:2rem;">—</div>
-              </div>
-            </div>
-            </div>
-
-          <!-- Feedback -->
-          <div id="cFeedback"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-  {% endif %}
 
   <!-- Sample list -->
-  <div class="{% if personal_model.reference_sequence_json %}col-lg-12{% else %}col-lg-7{% endif %}">
+  <div class="col-lg-7">
     <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h6 class="mb-0">Training Samples ({{ samples|length }})</h6>
+      <div class="card-header">
+        <h6 class="mb-0">Made Shots ({{ samples|length }})</h6>
       </div>
       {% if samples %}
       <div class="card-body p-0">
@@ -175,31 +175,33 @@
             <tr>
               <th>#</th>
               <th>Video</th>
-              <th>Outcome</th>
               <th>Added</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {% for s in samples %}
+            {% if s.label == 1 %}
             <tr>
               <td class="text-muted">{{ forloop.counter }}</td>
               <td class="small">{{ s.video_name }}</td>
-              <td>
-                {% if s.label == 1 %}
-                  <span class="badge badge-made">Made</span>
-                {% else %}
-                  <span class="badge badge-missed">Missed</span>
-                {% endif %}
-              </td>
               <td class="text-muted small">{{ s.created_at|date:"M d, H:i" }}</td>
+              <td>
+                <form method="post" action="{% url 'delete_sample' s.id %}"
+                      onsubmit="return confirm('Remove {{ s.video_name }}?')">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2">✕</button>
+                </form>
+              </td>
             </tr>
+            {% endif %}
             {% endfor %}
           </tbody>
         </table>
       </div>
       {% else %}
       <div class="card-body text-center text-muted py-4">
-        No samples yet. Upload your first shot video on the left.
+        No made shots yet. Upload your first video above.
       </div>
       {% endif %}
     </div>
@@ -212,72 +214,12 @@
 <script>
   const currentStatus = '{{ personal_model.training_status }}';
 
-  async function runConsistencyCheck() {
-    const fileInput = document.getElementById('consistencyVideoInput');
-    if (!fileInput || !fileInput.files.length) {
-      alert('Please select a video file first.');
-      return;
-    }
-
-    document.getElementById('consistencyLoading').style.display = 'block';
-    document.getElementById('consistencyResult').style.display = 'none';
-    document.getElementById('consistencyError').style.display = 'none';
-
-    const fd = new FormData();
-    fd.append('video', fileInput.files[0]);
-
-    try {
-      const resp = await fetch('{% url "consistency_check" %}', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': '{{ csrf_token }}' },
-        body: fd,
-      });
-      const data = await resp.json();
-      document.getElementById('consistencyLoading').style.display = 'none';
-
-      if (data.error) {
-        const el = document.getElementById('consistencyError');
-        el.textContent = data.error;
-        el.style.display = 'block';
-        return;
-      }
-
-      renderConsistencyResult(data);
-    } catch (err) {
-      document.getElementById('consistencyLoading').style.display = 'none';
-      const el = document.getElementById('consistencyError');
-      el.textContent = 'Network error: ' + err.message;
-      el.style.display = 'block';
-    }
-  }
-
-  function renderConsistencyResult(data) {
-    const score = data.overall_score;
-    const gradeColor = score >= 85 ? '#2ECC71' : score >= 70 ? '#4A90D9' : score >= 55 ? '#F39C12' : '#E74C3C';
-
-    document.getElementById('cScore').textContent = score;
-    document.getElementById('cScore').style.color = gradeColor;
-    document.getElementById('cGrade').textContent = data.grade;
-    document.getElementById('cGrade').style.color = gradeColor;
-
-    // Feedback
-    const fbEl = document.getElementById('cFeedback');
-    fbEl.innerHTML = (data.feedback || []).map(f =>
-      `<p class="small mb-1">${f}</p>`
-    ).join('');
-
-    document.getElementById('consistencyResult').style.display = 'block';
-  }
-
   document.getElementById('addSampleForm').addEventListener('submit', function () {
     document.getElementById('loadingOverlay').classList.add('active');
     document.getElementById('addBtn').disabled = true;
   });
 
-  // Poll training status if currently running
-  if (currentStatus === 'running') {
-    pollStatus();
-  }
+  if (currentStatus === 'running') { pollStatus(); }
 
   function pollStatus() {
     fetch("{% url 'training_status' %}")
@@ -285,10 +227,9 @@
       .then(data => {
         if (data.status === 'running') {
           const msg = document.getElementById('statusMsg');
-          if (msg) { msg.textContent = '⏳ ' + data.message; }
+          if (msg) msg.textContent = '⏳ ' + data.message;
           setTimeout(pollStatus, 2000);
         } else {
-          // Training finished — reload to show final state
           location.reload();
         }
       })

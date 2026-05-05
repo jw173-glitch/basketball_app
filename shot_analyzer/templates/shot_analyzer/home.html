@@ -11,75 +11,131 @@
 
 <!-- Quick stats -->
 <div class="row g-3 mb-4">
+
   <div class="col-6 col-md-3">
     <div class="stat-box">
       <div class="stat-value text-warning">{{ recent_sessions.count }}</div>
-      <div class="stat-label">Sessions</div>
+      <div class="stat-label">Compare sessions</div>
     </div>
   </div>
+
   <div class="col-6 col-md-3">
     <div class="stat-box">
-      <div class="stat-value" style="color:#2ECC71;">{{ sample_counts.made }}</div>
-      <div class="stat-label">Made samples</div>
+      <div class="stat-value" style="color:#2ECC71;">{{ n_made }}</div>
+      <div class="stat-label">Made shots uploaded</div>
     </div>
   </div>
+
   <div class="col-6 col-md-3">
     <div class="stat-box">
-      <div class="stat-value" style="color:#E74C3C;">{{ sample_counts.missed }}</div>
-      <div class="stat-label">Missed samples</div>
+      <div class="stat-value" style="color:#4A90D9;">
+        {% if n_made == 0 %}—{% else %}{{ scoring_stage }}{% endif %}
+      </div>
+      <div class="stat-label">
+        Scoring stage
+        {% if n_made > 0 %}
+          <span class="d-block" style="font-size:.65rem; color:#888; margin-top:2px;">
+            {% if scoring_stage == 1 %}DTW{% elif scoring_stage == 2 %}SVM+aug{% else %}SVM{% endif %}
+          </span>
+        {% endif %}
+      </div>
     </div>
   </div>
+
   <div class="col-6 col-md-3">
     <div class="stat-box">
-      {% if personal_model.is_trained %}
+      {% if personal_model.training_status == 'running' %}
+        <div class="stat-value text-warning">⏳</div>
+        <div class="stat-label">Training…</div>
+      {% elif n_made == 0 %}
+        <div class="stat-value text-muted">—</div>
+        <div class="stat-label">No shots yet</div>
+      {% elif personal_model.training_status == 'complete' %}
         <div class="stat-value" style="color:#2ECC71;">✅</div>
-        <div class="stat-label">Model ready</div>
+        <div class="stat-label">Scorer ready</div>
       {% else %}
         <div class="stat-value text-muted">—</div>
-        <div class="stat-label">Model not trained</div>
+        <div class="stat-label">Not trained</div>
       {% endif %}
     </div>
   </div>
+
 </div>
 
 <!-- Quick actions -->
 <div class="row g-3 mb-4">
+
   <div class="col-md-4">
     <div class="card h-100">
       <div class="card-body d-flex flex-column">
         <h5>📹 Compare Shots</h5>
-        <p class="text-muted flex-grow-1">Upload a reference video and your own shot to get a DTW-based consistency score.</p>
+        <p class="text-muted flex-grow-1">
+          Compare your shot against a professional player template or any
+          reference video. DTW analysis breaks down consistency joint-by-joint.
+        </p>
         <a href="{% url 'compare' %}" class="btn btn-primary">Start Analysis</a>
       </div>
     </div>
   </div>
+
   <div class="col-md-4">
     <div class="card h-100">
       <div class="card-body d-flex flex-column">
         <h5>🧠 Train My Model</h5>
-        <p class="text-muted flex-grow-1">Upload your own made/missed shots to train a personalized scoring model.</p>
+        <p class="text-muted flex-grow-1">
+          Upload your made shots — the scorer auto-trains after every upload
+          and improves as your dataset grows.
+          {% if n_made == 0 %}
+            <span class="d-block mt-1 text-warning small">Start with 1 shot.</span>
+          {% elif scoring_stage == 1 %}
+            <span class="d-block mt-1 text-muted small">
+              {{ n_made }}/10 shots → Stage 2 (SVM) unlocks at 10.
+            </span>
+          {% elif scoring_stage == 2 %}
+            <span class="d-block mt-1 text-muted small">
+              {{ n_made }}/20 shots → Stage 3 (full SVM) unlocks at 20.
+            </span>
+          {% else %}
+            <span class="d-block mt-1 text-success small">
+              Stage 3 active — {{ n_made }} real shots, no augmentation needed.
+            </span>
+          {% endif %}
+        </p>
         <a href="{% url 'training' %}" class="btn btn-primary">Go to Training</a>
       </div>
     </div>
   </div>
+
   <div class="col-md-4">
     <div class="card h-100">
       <div class="card-body d-flex flex-column">
         <h5>🎯 Score My Shot</h5>
-        <p class="text-muted flex-grow-1">Upload a new shot and let your trained model predict your likelihood of making it.</p>
-        <a href="{% url 'score' %}" class="btn btn-primary {% if not personal_model.is_trained %}disabled{% endif %}">
-          {% if personal_model.is_trained %}Score a Shot{% else %}Train First{% endif %}
+        <p class="text-muted flex-grow-1">
+          Upload a shot and see how closely your mechanics match your own
+          made-shot patterns.
+          {% if n_made == 0 %}
+            <span class="d-block mt-1 text-muted small">Upload a made shot first.</span>
+          {% elif scoring_stage == 1 %}
+            <span class="d-block mt-1 text-muted small">Scoring via DTW consistency.</span>
+          {% else %}
+            <span class="d-block mt-1 text-muted small">Scoring via OneClass SVM (stage {{ scoring_stage }}).</span>
+          {% endif %}
+        </p>
+        <a href="{% url 'score' %}"
+           class="btn btn-primary {% if n_made == 0 %}disabled{% endif %}">
+          {% if n_made == 0 %}Upload shots first{% else %}Score a Shot{% endif %}
         </a>
       </div>
     </div>
   </div>
+
 </div>
 
 <!-- Recent sessions -->
 {% if recent_sessions %}
 <div class="card">
   <div class="card-header">
-    <h5 class="mb-0">Recent Analysis Sessions</h5>
+    <h5 class="mb-0">Recent Compare Sessions</h5>
   </div>
   <div class="card-body p-0">
     <table class="table table-dark table-hover mb-0">
@@ -109,4 +165,5 @@
   </div>
 </div>
 {% endif %}
+
 {% endblock %}

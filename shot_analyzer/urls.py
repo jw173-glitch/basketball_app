@@ -17,4 +17,5 @@ urlpatterns = [
     path('detect/',             views.detect_shots,          name='detect_shots'),
     path('detect/process/',     views.process_frame_viewer,  name='detect_process'),
     path('training/consistency/', views.consistency_check, name='consistency_check'),
+    path('training/delete/<int:sample_id>/', views.delete_sample, name='delete_sample'),
 ]

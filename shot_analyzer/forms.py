@@ -70,13 +70,8 @@ class CompareForm(forms.Form):
 
 class TrainingSampleForm(forms.Form):
     video = forms.FileField(
-        label='Shot Video',
+        label='Shot Video (made shots only)',
         widget=forms.FileInput(attrs={'class': 'form-control', 'accept': 'video/*'}),
-    )
-    label = forms.ChoiceField(
-        choices=[('1', 'Made'), ('0', 'Missed')],
-        widget=forms.RadioSelect,
-        label='Outcome',
     )
 
 
